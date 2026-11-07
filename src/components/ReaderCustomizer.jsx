@@ -19,17 +19,17 @@ export const DEFAULT_READER_SETTINGS = {
   fontSize: 18,
   fontFamily: 'auto', // 'auto' | 'sans' | 'serif' | 'bengali' | 'arabic' | 'mono'
   lineHeight: 'comfortable', // 'compact' | 'comfortable' | 'relaxed'
-  theme: 'obsidian', // 'obsidian' | 'midnight' | 'sepia' | 'oled'
-  layoutMode: 'split', // 'split' | 'text-focused' | 'canvas-focused'
+  theme: 'paper', // 'paper' | 'obsidian' | 'midnight' | 'sepia' | 'oled'
   highlightStyle: 'glow', // 'glow' | 'subtle' | 'warm'
   autoScroll: true,
   contentWidth: 'reading' // 'compact' | 'reading' | 'full'
 };
 
 export const THEMES = [
+  { id: 'paper', label: 'Paper White', color: '#ffffff', border: '#cbd5e1' },
   { id: 'obsidian', label: 'Obsidian', color: '#070a0f', border: '#1e293b' },
   { id: 'midnight', label: 'Midnight', color: '#0a1120', border: '#1e293b' },
-  { id: 'sepia', label: 'Warm Sepia', color: '#17130e', border: '#2e261f' },
+  { id: 'sepia', label: 'Warm Sepia', color: '#fbf7ee', border: '#e2d8c3' },
   { id: 'oled', label: 'High Contrast', color: '#000000', border: '#334155' }
 ];
 
@@ -220,52 +220,25 @@ export function ReaderCustomizer({ settings, updateSetting, onReset }) {
           {/* Reading Theme */}
           <div>
             <label className="text-xs font-medium text-slate-300 mb-1.5 block">
-              Reading Theme
+              Document Sheet Theme
             </label>
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-5 gap-1.5">
               {THEMES.map((th) => (
                 <button
                   key={th.id}
                   type="button"
                   onClick={() => updateSetting('theme', th.id)}
-                  className={`flex flex-col items-center gap-1 p-2 rounded-xl border text-center transition ${
+                  className={`flex flex-col items-center gap-1 p-1.5 rounded-xl border text-center transition ${
                     settings.theme === th.id
                       ? 'border-brand-400 bg-brand-500/10 text-brand-300 font-medium'
-                      : 'border-obsidian-700/80 bg-obsidian-950/70 text-slate-400 hover:text-white hover:border-slate-600'
+                      : 'border-obsidian-750 bg-obsidian-950/70 text-slate-400 hover:text-white hover:border-slate-600'
                   }`}
                 >
                   <span
-                    className="w-4 h-4 rounded-full border"
+                    className="w-3.5 h-3.5 rounded-full border shadow-sm"
                     style={{ backgroundColor: th.color, borderColor: th.border }}
                   />
-                  <span className="text-[10.5px] leading-tight truncate w-full">{th.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Layout Mode */}
-          <div>
-            <label className="text-xs font-medium text-slate-300 mb-1.5 block">
-              Workspace Layout
-            </label>
-            <div className="grid grid-cols-3 gap-1.5">
-              {[
-                { id: 'split', label: 'Split View' },
-                { id: 'text-focused', label: 'Text Focus' },
-                { id: 'canvas-focused', label: 'Canvas Focus' }
-              ].map((lm) => (
-                <button
-                  key={lm.id}
-                  type="button"
-                  onClick={() => updateSetting('layoutMode', lm.id)}
-                  className={`py-1.5 px-2 text-xs rounded-lg border transition text-center ${
-                    settings.layoutMode === lm.id
-                      ? 'bg-brand-500/10 text-brand-300 border-brand-500/40 font-medium'
-                      : 'border-obsidian-700 text-slate-400 hover:text-white hover:bg-obsidian-800'
-                  }`}
-                >
-                  {lm.label}
+                  <span className="text-[10px] leading-tight truncate w-full">{th.label}</span>
                 </button>
               ))}
             </div>

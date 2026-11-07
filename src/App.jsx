@@ -8,6 +8,7 @@ import { VoiceStudio } from './components/VoiceStudio';
 import { ModelHub } from './components/ModelHub';
 import { Loader2 } from 'lucide-react';
 import { stageForStatus } from './lib/pageStages';
+import { useTheme } from './lib/theme';
 import {
   useRoute,
   navigate,
@@ -20,6 +21,7 @@ import {
 } from './lib/router';
 
 export function App() {
+  const { theme, isDark } = useTheme();
   const route = useRoute();
   const currentProjectId = route.name === 'project' ? route.projectId : null;
 

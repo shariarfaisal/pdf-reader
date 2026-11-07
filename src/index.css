@@ -1,12 +1,13 @@
 @import "tailwindcss";
 
 @theme {
-  --color-obsidian-950: #070a0f;
-  --color-obsidian-900: #0b0f17;
-  --color-obsidian-850: #0f1622;
-  --color-obsidian-800: #131b26;
-  --color-obsidian-700: #1e293b;
-  --color-obsidian-600: #334155;
+  --color-obsidian-950: var(--obsidian-950);
+  --color-obsidian-900: var(--obsidian-900);
+  --color-obsidian-850: var(--obsidian-850);
+  --color-obsidian-800: var(--obsidian-800);
+  --color-obsidian-750: var(--obsidian-750);
+  --color-obsidian-700: var(--obsidian-700);
+  --color-obsidian-600: var(--obsidian-600);
 
   --color-brand-50: #f0f9ff;
   --color-brand-100: #e0f2fe;
@@ -21,12 +22,76 @@
   --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, monospace;
 }
 
+:root, html.dark {
+  color-scheme: dark;
+  --obsidian-950: #070a0f;
+  --obsidian-900: #0b0f17;
+  --obsidian-850: #0f1622;
+  --obsidian-800: #131b26;
+  --obsidian-750: #182232;
+  --obsidian-700: #1e293b;
+  --obsidian-600: #334155;
+  --app-bg: #0b0f17;
+  --app-color: #f8fafc;
+  --app-scrollbar-thumb: #1e293b;
+  --app-scrollbar-hover: #334155;
+}
+
+html.light {
+  color-scheme: light;
+  --obsidian-950: #f1f5f9;
+  --obsidian-900: #ffffff;
+  --obsidian-850: #f8fafc;
+  --obsidian-800: #f1f5f9;
+  --obsidian-750: #e2e8f0;
+  --obsidian-700: #cbd5e1;
+  --obsidian-600: #94a3b8;
+  --app-bg: #f8fafc;
+  --app-color: #0f172a;
+  --app-scrollbar-thumb: #cbd5e1;
+  --app-scrollbar-hover: #94a3b8;
+
+  /* In light mode, map slate hierarchy to high-contrast dark text */
+  --color-slate-50: #020617;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f8fafc;
+  --color-slate-950: #ffffff;
+}
+
+html.light .text-white {
+  color: #0f172a;
+}
+
+html.light .hover\:text-white:hover {
+  color: #020617;
+}
+
+/* Ensure white text remains white on dark/brand buttons and badges */
+html.light button.bg-brand-500,
+html.light button.bg-brand-600,
+html.light [class*="bg-brand-"] .text-white,
+html.light [class*="bg-brand-500"],
+html.light [class*="bg-brand-600"],
+html.light [class*="bg-blue-600"],
+html.light [class*="bg-emerald-600"],
+html.light .btn-brand {
+  color: #ffffff;
+}
+
 @layer base {
   body {
-    background-color: var(--color-obsidian-900);
-    color: #f8fafc;
+    background-color: var(--app-bg);
+    color: var(--app-color);
     font-family: var(--font-sans);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   /* Custom subtle scrollbar */
@@ -38,11 +103,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #1e293b;
+    background: var(--app-scrollbar-thumb);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #334155;
+    background: var(--app-scrollbar-hover);
   }
 }
 
@@ -73,8 +138,23 @@
 }
 
 .reader-theme-sepia {
+  background-color: #fbf7ee;
+  color: #382d1d;
+}
+
+html.dark .reader-theme-sepia {
   background-color: #17130e;
   color: #fed7aa;
+}
+
+.reader-theme-paper {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+html.dark .reader-theme-paper {
+  background-color: #0b0f17;
+  color: #f8fafc;
 }
 
 .reader-theme-oled {
@@ -119,6 +199,20 @@
   transition: all 0.2s ease;
 }
 
+/* Document page shadow effect for realistic PDF reader look */
+.pdf-page-sheet {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px var(--obsidian-750);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+html.dark .pdf-page-sheet {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.pdf-page-sheet.active-sheet {
+  box-shadow: 0 10px 30px -4px rgba(14, 165, 233, 0.15), 0 0 0 2px #38bdf8;
+}
+
 /* Motion utilities (referenced by Modal / lists) */
 @keyframes fade-in {
   from { opacity: 0; }
@@ -150,6 +244,6 @@
 }
 
 /* Thin scrollbars for dense config panes */
-.scroll-slim::-webkit-scrollbar { width: 8px; }
-.scroll-slim::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 9999px; }
-.scroll-slim::-webkit-scrollbar-thumb:hover { background: #334155; }
+.scroll-slim::-webkit-scrollbar { width: 6px; }
+.scroll-slim::-webkit-scrollbar-thumb { background: var(--app-scrollbar-thumb); border-radius: 9999px; }
+.scroll-slim::-webkit-scrollbar-thumb:hover { background: var(--app-scrollbar-hover); }

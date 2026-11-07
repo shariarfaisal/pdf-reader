@@ -1,5 +1,5 @@
-import React from 'react';
-import { Play, Pause, StepForward, Square, Layers, ScanText, Wand2, AudioLines } from 'lucide-react';
+import React, { useRef } from 'react';
+import { Play, Pause, StepForward, Square, Layers, ScanText, Wand2, AudioLines, PanelRightClose } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
 import { Section } from './ui/Section';
@@ -75,8 +75,35 @@ export function PipelineInspector({
   onClearLogs,
   remoteStatus,
   onRemoteStart,
-  onRemoteStop
+  onRemoteStop,
+  width = 384,
+  onResize,
+  onToggle
 }) {
+  const isDraggingRef = useRef(false);
+
+  const handleMouseDown = (e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    const startX = e.clientX;
+    const startWidth = width;
+
+    const handleMouseMove = (moveEvent) => {
+      if (!isDraggingRef.current) return;
+      const delta = startX - moveEvent.clientX;
+      const nextWidth = Math.max(280, Math.min(680, startWidth + delta));
+      onResize?.(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
   const totalPages = pages.length;
   const counts = countBuckets(pages);
   const percentReady = totalPages > 0 ? Math.round((counts.audio / totalPages) * 100) : 0;
@@ -117,14 +144,40 @@ export function PipelineInspector({
 
   return (
     // pb-20 clears the fixed AudioPlayerBar so the log tail is never covered.
-    <div className="flex flex-col h-full w-96 flex-shrink-0 overflow-y-auto bg-obsidian-900 border-l border-obsidian-700/80 text-sm pb-20">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-2 px-4 py-3 border-b border-obsidian-700/80 bg-obsidian-850/95 backdrop-blur">
-        <h3 className="flex items-center gap-2 font-semibold text-slate-100 text-sm tracking-wide">
-          <Layers className="w-4 h-4 text-brand-400" aria-hidden="true" />
-          Pipeline Inspector
-        </h3>
-        <Badge status={project?.status || 'idle'} size="xs" />
+    <div
+      className="relative flex flex-col h-full flex-shrink-0 bg-obsidian-900 border-l border-obsidian-750 text-sm pb-20 select-none z-20"
+      style={{ width: `${width}px` }}
+    >
+      {/* Draggable resize handle on the left edge */}
+      <div
+        onMouseDown={handleMouseDown}
+        title="Drag to resize Inspector"
+        className="absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize hover:bg-brand-500/50 active:bg-brand-500 transition-colors z-30"
+      />
+
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-2 px-4 py-3 border-b border-obsidian-750 bg-obsidian-850/95 backdrop-blur flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <Layers className="w-4 h-4 text-brand-400 flex-shrink-0" aria-hidden="true" />
+          <h3 className="font-semibold text-slate-100 text-sm tracking-wide truncate">
+            Pipeline Inspector
+          </h3>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Badge status={project?.status || 'idle'} size="xs" />
+          {onToggle && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon={PanelRightClose}
+              onClick={onToggle}
+              title="Collapse Inspector"
+              aria-label="Collapse Inspector"
+            />
+          )}
+        </div>
       </header>
+
+      <div className="flex-1 overflow-y-auto overflow-x-hidden scroll-slim">
 
       <Section
         id="inspector-stages"
@@ -284,6 +337,7 @@ export function PipelineInspector({
       />
 
       <LogConsole logs={logs} onClear={onClearLogs} onSelectPage={onSelectPage} />
+      </div>
     </div>
   );
 }

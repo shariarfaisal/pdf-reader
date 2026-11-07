@@ -21,6 +21,7 @@ import { Badge, Tag } from './ui/Badge';
 import { ProgressBar } from './ui/ProgressBar';
 import { MetricCard } from './ui/MetricCard';
 import { ConfirmModal } from './ui/ConfirmModal';
+import { ThemeToggle } from './ui/ThemeToggle';
 import { formatRelativeTime } from '../lib/format';
 
 /** First-page cover for a project; falls back to a branded placeholder. */
@@ -175,6 +176,7 @@ export function ProjectList({
                 <span className="hidden sm:inline">Settings</span>
               </Button>
             )}
+            <ThemeToggle />
             <Button variant="primary" size="sm" icon={Plus} onClick={onNewProject}>
               New Project
             </Button>
