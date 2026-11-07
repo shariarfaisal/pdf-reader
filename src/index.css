@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+@theme {
+  --color-obsidian-950: #070a0f;
+  --color-obsidian-900: #0b0f17;
+  --color-obsidian-850: #0f1622;
+  --color-obsidian-800: #131b26;
+  --color-obsidian-700: #1e293b;
+  --color-obsidian-600: #334155;
+
+  --color-brand-50: #f0f9ff;
+  --color-brand-100: #e0f2fe;
+  --color-brand-300: #7dd3fc;
+  --color-brand-400: #38bdf8;
+  --color-brand-500: #0ea5e9;
+  --color-brand-600: #0284c7;
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-bengali: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
+  --font-arabic: 'Amiri', 'Scheherazade New', serif;
+  --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-obsidian-900);
+    color: #f8fafc;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom subtle scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #334155;
+  }
+}
+
+/* Multilingual text classes */
+.font-bengali-reading {
+  font-family: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
+}
+
+.font-arabic-reading {
+  font-family: 'Amiri', 'Scheherazade New', serif;
+  direction: rtl;
+  text-align: right;
+}
+
+.font-serif-reading {
+  font-family: 'Merriweather', Georgia, Cambria, serif;
+}
+
+/* Reader themes */
+.reader-theme-obsidian {
+  background-color: #070a0f;
+  color: #f1f5f9;
+}
+
+.reader-theme-midnight {
+  background-color: #0a1120;
+  color: #f8fafc;
+}
+
+.reader-theme-sepia {
+  background-color: #17130e;
+  color: #fed7aa;
+}
+
+.reader-theme-oled {
+  background-color: #000000;
+  color: #ffffff;
+}
+
+/* Active reading line highlights */
+.reader-highlight-glow {
+  background-color: rgba(56, 189, 248, 0.16);
+  border-left: 4px solid #38bdf8;
+  padding-left: 0.875rem;
+  padding-right: 0.5rem;
+  border-radius: 0 0.5rem 0.5rem 0;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 16px -2px rgba(56, 189, 248, 0.15);
+}
+
+.reader-highlight-subtle {
+  background-color: rgba(56, 189, 248, 0.08);
+  border-left: 3px solid #0284c7;
+  padding-left: 0.75rem;
+  border-radius: 0 0.375rem 0.375rem 0;
+  transition: all 0.15s ease;
+}
+
+.reader-highlight-warm {
+  background-color: rgba(245, 158, 11, 0.14);
+  border-left: 4px solid #f59e0b;
+  padding-left: 0.875rem;
+  padding-right: 0.5rem;
+  border-radius: 0 0.5rem 0.5rem 0;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 16px -2px rgba(245, 158, 11, 0.15);
+}
+
+.active-reading-line {
+  background-color: rgba(56, 189, 248, 0.14);
+  border-left: 3px solid #38bdf8;
+  padding-left: 0.75rem;
+  border-radius: 0 0.375rem 0.375rem 0;
+  transition: all 0.2s ease;
+}
+
+/* Motion utilities (referenced by Modal / lists) */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@layer utilities {
+  .animate-fade-in { animation: fade-in 160ms ease-out both; }
+  .animate-modal-in { animation: modal-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-rise-in { animation: rise-in 220ms ease-out both; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-modal-in,
+  .animate-rise-in {
+    animation: none;
+  }
+}
+
+/* Thin scrollbars for dense config panes */
+.scroll-slim::-webkit-scrollbar { width: 8px; }
+.scroll-slim::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 9999px; }
+.scroll-slim::-webkit-scrollbar-thumb:hover { background: #334155; }

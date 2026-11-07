@@ -1,0 +1,33 @@
+{
+  "name": "pdf-reader",
+  "version": "1.0.0",
+  "description": "Intelligent PDF Reader & Audiobook Narrator",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "node server/index.js",
+    "build:frontend": "vite build",
+    "start": "node server/index.js",
+    "test:pipeline": "node --import ./tests/pipeline-lanes/register.mjs ./tests/pipeline-lanes/run.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bijoy-unicode-converter": "^0.1.2",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "lucide-react": "^1.69.0",
+    "multer": "^2.5.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.4",
+    "@vitejs/plugin-react": "^6.2.1",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^4.3.4",
+    "vite": "^8.3.6"
+  }
+}
