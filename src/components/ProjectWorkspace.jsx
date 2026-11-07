@@ -36,6 +36,7 @@ import { AudioPlayerBar } from './AudioPlayerBar';
 import { PageManagerModal } from './PageManagerModal';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { TextRulesModal } from './TextRulesModal';
+import { buildSyncMap, compactSpanToRaw, markIndexAt, parseTimings } from '../lib/audioSync';
 import {
   ReaderCustomizer,
   CanvasZoomToolbar,
@@ -134,13 +135,42 @@ export function ProjectWorkspace({
     return (raw || '').split('\n\n').filter(Boolean);
   }, [viewMode, activePage.raw_text, activePage.refined_text]);
 
+  // Exact sentence marks reported by the TTS engine, matched to these paragraphs.
+  const syncEntries = useMemo(
+    () => buildSyncMap(paragraphs, parseTimings(activePage)),
+    [paragraphs, activePage.audio_timings]
+  );
+
+  const activeMark = useMemo(() => {
+    const index = markIndexAt(syncEntries, playbackTime);
+    return index >= 0 ? syncEntries[index] : null;
+  }, [syncEntries, playbackTime]);
+
   const activeParagraphIndex = useMemo(() => {
+    if (syncEntries) return activeMark ? activeMark.paragraph : -1;
+    // No marks (system-voice fallback or audio made before timings existed):
+    // fall back to a progress estimate.
     if (playbackDuration > 0 && paragraphs.length > 0) {
       const fraction = playbackTime / playbackDuration;
       return Math.min(paragraphs.length - 1, Math.floor(fraction * paragraphs.length));
     }
     return -1;
-  }, [playbackTime, playbackDuration, paragraphs.length]);
+  }, [syncEntries, activeMark, playbackTime, playbackDuration, paragraphs.length]);
+
+  // Wrap the exact sentence being narrated inside the active paragraph.
+  const renderParagraphText = (para, isActive) => {
+    if (!isActive || !activeMark) return para;
+    const span = compactSpanToRaw(para, activeMark.from, activeMark.to);
+    if (!span) return para;
+    const [start, end] = span;
+    return (
+      <>
+        {para.slice(0, start)}
+        <span className="rounded-sm bg-brand-400/30 box-decoration-clone">{para.slice(start, end)}</span>
+        {para.slice(end)}
+      </>
+    );
+  };
 
   // Auto-scroll to active paragraph if enabled
   useEffect(() => {
@@ -1066,7 +1096,7 @@ export function ProjectWorkspace({
                             lineHeight: lineHeightVal
                           }}
                         >
-                          {para}
+                          {renderParagraphText(para, isHighlight)}
                         </p>
                       );
                     })

@@ -23,4 +23,9 @@ A dedicated PDF and scanned-book reader featuring human-like voice narration, de
 npm run dev            # API + UI on http://localhost:4321
 npm run build:frontend # Production bundle served by the API
 npm run test:pipeline  # Stage-lane scheduler tests (OCR/LLM/TTS stubbed, temp DB)
+
+# Narration sync: fill sentence timings for pages synthesized before the engine
+# reported them (never re-synthesizes; reads the stored WAV + script).
+python bin/backfill_timings.py           # only pages missing timings
+python bin/backfill_timings.py --dry-run # report only
 ```

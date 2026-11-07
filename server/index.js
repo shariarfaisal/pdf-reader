@@ -1055,8 +1055,11 @@ app.get('/api/projects/:id/pages/:pageNum/audio', (req, res) => {
   }
 
   const inline = req.query.inline === '1' || req.query.inline === 'true';
+  const stat = fs.statSync(audioFile);
   res.setHeader('Content-Type', 'audio/wav');
-  res.setHeader('Content-Length', fs.statSync(audioFile).size);
+  // Byte ranges let the player scrub, resume mid-page, and jump to the sentence
+  // the user clicked. Without them Chrome reports seekable=0 and refuses seeks.
+  res.setHeader('Accept-Ranges', 'bytes');
   // The URL carries a version param that changes when audio is regenerated, so
   // short-lived caching is safe and lets the player pre-buffer the next page.
   res.setHeader('Cache-Control', inline ? 'private, max-age=600' : 'no-store');
@@ -1071,6 +1074,33 @@ app.get('/api/projects/:id/pages/:pageNum/audio', (req, res) => {
     );
   }
 
+  const rangeMatch = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || '').trim());
+  if (rangeMatch && (rangeMatch[1] || rangeMatch[2])) {
+    const size = stat.size;
+    let start = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
+    let end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : size - 1;
+    if (!rangeMatch[1] && rangeMatch[2]) {
+      start = Math.max(0, size - parseInt(rangeMatch[2], 10));
+      end = size - 1;
+    }
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+      res.status(416).setHeader('Content-Range', `bytes */${size}`);
+      return res.end();
+    }
+    end = Math.min(end, size - 1);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+    res.setHeader('Content-Length', end - start + 1);
+    const partial = fs.createReadStream(audioFile, { start, end });
+    partial.on('error', (err) => {
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+      else res.destroy();
+    });
+    req.on('close', () => partial.destroy());
+    return partial.pipe(res);
+  }
+
+  res.setHeader('Content-Length', stat.size);
   const stream = fs.createReadStream(audioFile);
   stream.on('error', (err) => {
     if (!res.headersSent) res.status(500).json({ error: err.message });

@@ -42,6 +42,7 @@ db.exec(`
     refined_text TEXT,
     audio_path TEXT,
     audio_duration REAL DEFAULT 0,
+    audio_timings TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT,
     updated_at INTEGER NOT NULL,
@@ -135,6 +136,11 @@ if (!hasPageColumn('source_page')) {
 // Newest text_rules.updated_at already folded into this page's refined_text.
 if (!hasPageColumn('text_rules_stamp')) {
   db.exec(`ALTER TABLE pages ADD COLUMN text_rules_stamp INTEGER NOT NULL DEFAULT 0`);
+}
+// Narration sync: JSON [{start,end,text}] emitted by the TTS engine per sentence
+// chunk. NULL means "no marks yet" — the reader then falls back to an estimate.
+if (!hasPageColumn('audio_timings')) {
+  db.exec(`ALTER TABLE pages ADD COLUMN audio_timings TEXT`);
 }
 
 db.exec(`
@@ -334,6 +340,7 @@ export const queries = {
     refinedText = null,
     audioPath = null,
     audioDuration = 0,
+    audioTimings = null,
     status = null,
     errorMessage = null
   }) => {
@@ -353,6 +360,7 @@ export const queries = {
           refined_text = COALESCE(?, refined_text),
           audio_path = COALESCE(?, audio_path),
           audio_duration = CASE WHEN ? = 0 THEN audio_duration ELSE ? END,
+          audio_timings = COALESCE(?, audio_timings),
           status = COALESCE(?, status),
           error_message = ?,
           updated_at = ?
@@ -368,6 +376,7 @@ export const queries = {
         audioPath,
         audioDuration,
         audioDuration,
+        audioTimings,
         status,
         errorMessage,
         now,
@@ -421,6 +430,7 @@ export const queries = {
         UPDATE pages SET
           audio_path = NULL,
           audio_duration = 0,
+          audio_timings = NULL,
           status = CASE WHEN refined_text IS NOT NULL AND TRIM(refined_text) != '' THEN 'refining' ELSE 'pending' END,
           error_message = NULL,
           updated_at = ?
@@ -435,6 +445,7 @@ export const queries = {
         refined_text = NULL,
         audio_path = NULL,
         audio_duration = 0,
+        audio_timings = NULL,
         status = 'pending',
         error_message = NULL,
         updated_at = ?
@@ -453,6 +464,7 @@ export const queries = {
         UPDATE pages SET
           audio_path = NULL,
           audio_duration = 0,
+          audio_timings = NULL,
           status = CASE WHEN refined_text IS NOT NULL AND TRIM(refined_text) != '' THEN 'refining' ELSE 'pending' END,
           error_message = NULL,
           updated_at = ?
@@ -467,6 +479,7 @@ export const queries = {
         refined_text = NULL,
         audio_path = NULL,
         audio_duration = 0,
+        audio_timings = NULL,
         status = 'pending',
         error_message = NULL,
         updated_at = ?
@@ -573,6 +586,7 @@ export const queries = {
         refined_text = ?,
         audio_path = NULL,
         audio_duration = 0,
+        audio_timings = NULL,
         status = 'pending',
         error_message = NULL,
         updated_at = ?
@@ -605,6 +619,7 @@ export const queries = {
 
     let newAudioPath = clearAudio ? null : existing.audio_path;
     let newAudioDuration = clearAudio ? 0 : existing.audio_duration;
+    let newAudioTimings = clearAudio ? null : existing.audio_timings;
 
     const newOcrSource =
       ocrSource !== null
@@ -625,6 +640,7 @@ export const queries = {
         refined_text = ?,
         audio_path = ?,
         audio_duration = ?,
+        audio_timings = ?,
         status = ?,
         error_message = NULL,
         updated_at = ?
@@ -635,6 +651,7 @@ export const queries = {
       newRefined,
       newAudioPath,
       newAudioDuration,
+      newAudioTimings,
       status,
       now,
       projectId,

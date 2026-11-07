@@ -51,6 +51,9 @@ export function AudioPlayerBar({
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const [volume, setVolume] = useState(readVolume);
   const [isMuted, setIsMuted] = useState(false);
+  // Drag-scrub state: while dragging, the bar follows the pointer instead of the audio clock.
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubRatio, setScrubRatio] = useState(null);
   const [isSpeedMenuOpen, setIsSpeedMenuOpen] = useState(false);
   const [isVolumeSliderOpen, setIsVolumeSliderOpen] = useState(false);
 
@@ -242,10 +245,18 @@ export function AudioPlayerBar({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isPlaying, currentAudioUrl, currentTime, duration]);
 
-  const handleSeek = (e) => {
+  /** Pointer position → 0..1 ratio along the track. */
+  const ratioFromEvent = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (!rect.width) return 0;
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  };
 
+  /**
+   * Apply a seek. `commit=false` is the live preview used while dragging: it only
+   * moves the current page's audio, never triggers a page load.
+   */
+  const applySeek = (ratio, commit = true) => {
     // Whole-book scrub
     if (timeline.total > 0) {
       const bookTime = ratio * timeline.total;
@@ -256,9 +267,13 @@ export function AudioPlayerBar({
       const localTime = Math.max(0, Math.min(bookTime - entry.start, entry.duration - 0.1));
 
       if (entry.pageNumber !== pageNumber) {
-        pendingSeekRef.current = localTime;
-        onSelectPage(entry.pageNumber);
-      } else if (audioRef.current) {
+        if (commit && onSelectPage) {
+          pendingSeekRef.current = localTime;
+          onSelectPage(entry.pageNumber);
+        }
+        return;
+      }
+      if (audioRef.current) {
         audioRef.current.currentTime = localTime;
         setCurrentTime(localTime);
         if (onTimeUpdate) onTimeUpdate(localTime, duration);
@@ -274,18 +289,59 @@ export function AudioPlayerBar({
     if (onTimeUpdate) onTimeUpdate(newTime, duration);
   };
 
-  const handleScrubMouseMove = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const targetTotal = timeline.total > 0 ? timeline.total : duration;
-    setHoverPosition({
-      percent: ratio * 100,
-      time: ratio * targetTotal
-    });
+  const seekTotal = timeline.total > 0 ? timeline.total : duration;
+
+  const handleScrubPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.focus?.();
+    const ratio = ratioFromEvent(e);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setIsScrubbing(true);
+    setScrubRatio(ratio);
+    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
+    applySeek(ratio, false);
   };
 
-  const handleScrubMouseLeave = () => {
-    setHoverPosition(null);
+  const handleScrubPointerMove = (e) => {
+    const ratio = ratioFromEvent(e);
+    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
+    if (!isScrubbing) return;
+    setScrubRatio(ratio);
+    applySeek(ratio, false);
+  };
+
+  const handleScrubPointerUp = (e) => {
+    if (!isScrubbing) return;
+    const ratio = ratioFromEvent(e);
+    setScrubRatio(ratio);
+    applySeek(ratio, true);
+    setIsScrubbing(false);
+    setScrubRatio(null);
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  const handleScrubPointerLeave = () => {
+    if (!isScrubbing) setHoverPosition(null);
+  };
+
+  const handleScrubKeyDown = (e) => {
+    if (!seekTotal) return;
+    const step = e.shiftKey ? 30 : 5;
+    const current = isScrubbing && scrubRatio !== null ? scrubRatio : progressPercent / 100;
+    let ratio = null;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') ratio = current - step / seekTotal;
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') ratio = current + step / seekTotal;
+    else if (e.key === 'Home') ratio = 0;
+    else if (e.key === 'End') ratio = 1;
+    if (ratio === null) return;
+    e.preventDefault();
+    ratio = Math.max(0, Math.min(1, ratio));
+    setScrubRatio(ratio);
+    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
+    applySeek(ratio, true);
   };
 
   const changeSpeed = (rate) => {
@@ -310,12 +366,12 @@ export function AudioPlayerBar({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const progressPercent =
-    timeline.total > 0
-      ? (bookPosition / timeline.total) * 100
-      : duration > 0
-      ? (currentTime / duration) * 100
-      : 0;
+  const progressPercent = useMemo(() => {
+    if (isScrubbing && scrubRatio !== null) return scrubRatio * 100;
+    if (timeline.total > 0) return (bookPosition / timeline.total) * 100;
+    if (duration > 0) return (currentTime / duration) * 100;
+    return 0;
+  }, [isScrubbing, scrubRatio, timeline.total, bookPosition, duration, currentTime]);
 
   const hasPrev = findPlayable(pageNumber, -1) !== null;
   const hasNext = findPlayable(pageNumber, 1) !== null;
@@ -338,20 +394,39 @@ export function AudioPlayerBar({
       <div className="max-w-7xl mx-auto flex flex-col gap-2">
         {/* Scrub Bar with Hover Time Tooltip */}
         <div
-          onClick={handleSeek}
-          onMouseMove={handleScrubMouseMove}
-          onMouseLeave={handleScrubMouseLeave}
-          className="relative w-full h-2 bg-obsidian-800 hover:h-3 rounded-full cursor-pointer transition-all duration-150 py-1 -my-1"
+          onPointerDown={handleScrubPointerDown}
+          onPointerMove={handleScrubPointerMove}
+          onPointerUp={handleScrubPointerUp}
+          onPointerCancel={handleScrubPointerUp}
+          onPointerLeave={handleScrubPointerLeave}
+          onKeyDown={handleScrubKeyDown}
+          role="slider"
+          tabIndex={0}
+          aria-label={timeline.total > 0 ? 'Book playback position' : 'Page playback position'}
+          aria-valuemin={0}
+          aria-valuemax={Math.round(seekTotal)}
+          aria-valuenow={Math.round(isScrubbing && scrubRatio !== null ? scrubRatio * seekTotal : Math.min(bookPosition, seekTotal))}
+          aria-valuetext={`${formatTime(isScrubbing && scrubRatio !== null ? scrubRatio * seekTotal : bookPosition)} of ${formatTime(seekTotal)}`}
+          className="group relative w-full h-3 -my-1 flex items-center cursor-pointer touch-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-obsidian-950"
           title={
             timeline.total > 0 ? 'Seek across the whole book' : 'Seek within this page'
           }
         >
-          <div className="w-full h-full bg-obsidian-800 rounded-full overflow-hidden relative">
+          {/* Track stays visible at rest; it only thickens on hover (parent height is fixed, so no layout shift). */}
+          <div className="w-full h-1.5 group-hover:h-2 bg-obsidian-600/70 rounded-full overflow-hidden transition-all duration-150">
             <div
-              className="h-full bg-gradient-to-r from-brand-400 via-sky-400 to-indigo-400 rounded-full transition-all duration-75 relative"
+              className="h-full bg-gradient-to-r from-brand-400 via-sky-400 to-indigo-400 rounded-full transition-all duration-75"
               style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }}
             />
           </div>
+
+          {/* Draggable playhead — always visible so the bar reads as interactive. */}
+          <div
+            className={`absolute top-1/2 w-3 h-3 rounded-full bg-white shadow-md ring-2 ring-brand-500/50 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-150 ${
+              isScrubbing ? 'scale-125' : 'scale-100 group-hover:scale-110'
+            }`}
+            style={{ left: `${Math.max(0, Math.min(100, progressPercent))}%` }}
+          />
 
           {/* Hover Time Tooltip */}
           {hoverPosition && (

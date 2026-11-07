@@ -269,6 +269,39 @@ def split_text_for_omnivoice(text, max_chars=280):
     return grouped
 
 
+def trim_timings(timings, duration):
+    """Clamp timing marks to the real audio length and drop empty spans."""
+    out = []
+    for mark in timings:
+        start = max(0.0, min(float(mark['start']), duration))
+        end = max(start, min(float(mark['end']), duration))
+        if end - start <= 0.01:
+            continue
+        out.append({'start': round(start, 3), 'end': round(end, 3), 'text': mark['text']})
+    return out
+
+
+def estimate_timings(text, duration):
+    """
+    Fallback for engines that expose no per-chunk audio (edge-tts, `say`).
+    Spreads the known duration across the same sentence chunks the speakers
+    would use, weighted by character count where CJK-style scripts differ in
+    speaking rate. Approximate, but far closer than an even paragraph split.
+    """
+    chunks = split_text_for_omnivoice(text, max_chars=280)
+    if not chunks or duration <= 0:
+        return []
+    weights = [max(1, len(item['text'].strip())) for item in chunks]
+    total = sum(weights)
+    timings = []
+    cursor = 0.0
+    for item, weight in zip(chunks, weights):
+        span = duration * (weight / total)
+        timings.append({'start': round(cursor, 3), 'end': round(cursor + span, 3), 'text': item['text'].strip()})
+        cursor += span
+    return trim_timings(timings, duration)
+
+
 def resolve_custom_voice_key(voice_name):
     if not voice_name:
         return 'Custom Voice'
@@ -395,6 +428,7 @@ def synthesize_omnivoice_clone(text, out_path, voice_key):
     timesteps = _get_time_steps(0.0, 1.0, num_step + 1, gen_config.t_shift).tolist()
 
     generated_token_tensors = []
+    spoken_texts = []
     ref_rms = float(prompt.ref_rms)
 
     with torch.inference_mode():
@@ -492,6 +526,7 @@ def synthesize_omnivoice_clone(text, out_path, voice_key):
                     u_ids[:, :, :t_len] = tokens
 
             generated_token_tensors.append(tokens[0].detach().cpu())
+            spoken_texts.append(txt)
             del c_ids, c_amask, c_attn, u_ids, u_amask, u_attn, tokens, inp, full_task
             if device == "mps":
                 torch.mps.empty_cache()
@@ -510,22 +545,31 @@ def synthesize_omnivoice_clone(text, out_path, voice_key):
     audio_tokenizer_path = os.path.join(HF_OMNIVOICE_SNAPSHOT, "audio_tokenizer")
     audio_tokenizer = _audio_tokenizer_cls().from_pretrained(audio_tokenizer_path, device_map="cpu")
 
+    sample_rate = 24000
     wav_parts = []
-    pause = torch.zeros((1, int(0.20 * 24000)), dtype=torch.float32)
+    timings = []
+    pause = torch.zeros((1, int(0.20 * sample_rate)), dtype=torch.float32)
+    cursor = 0.0
 
     with torch.inference_mode():
-        for tok in generated_token_tensors:
+        for tok, txt in zip(generated_token_tensors, spoken_texts):
             raw_wav = audio_tokenizer.decode(tok.unsqueeze(0)).audio_values[0].cpu()
             clean_wav = post_process_fn(raw_wav, postprocess_output=True, ref_rms=ref_rms)
-            wav_parts.append(clean_wav.detach().cpu().float())
+            clean_wav = clean_wav.detach().cpu().float()
+            wav_parts.append(clean_wav)
             wav_parts.append(pause)
+            # The chunk audio is decoded separately, so its exact span is free to
+            # record here — this is the narration sync ground truth, no aligner.
+            chunk_seconds = clean_wav.shape[-1] / float(sample_rate)
+            timings.append({'start': round(cursor, 3), 'end': round(cursor + chunk_seconds, 3), 'text': txt})
+            cursor += chunk_seconds + (pause.shape[-1] / float(sample_rate))
 
     del audio_tokenizer, generated_token_tensors
     gc.collect()
 
     full_wav = torch.cat(wav_parts[:-1], dim=-1)
-    torchaudio.save(os.path.abspath(out_path), full_wav, 24000)
-    return f"{voice_key} (OmniVoice Clone)"
+    torchaudio.save(os.path.abspath(out_path), full_wav, sample_rate)
+    return f"{voice_key} (OmniVoice Clone)", trim_timings(timings, full_wav.shape[-1] / float(sample_rate))
 
 
 def _resolve_mms_snapshot(script):
@@ -571,7 +615,10 @@ def synthesize_mms_tts(text, out_path):
     sr = int(getattr(model.config, 'sampling_rate', 16000))
 
     wav_parts = []
+    timings = []
     pause = torch.zeros((1, int(0.18 * sr)), dtype=torch.float32)
+    pause_seconds = pause.shape[-1] / float(sr)
+    cursor = 0.0
 
     with torch.inference_mode():
         for item in chunks:
@@ -584,6 +631,9 @@ def synthesize_mms_tts(text, out_path):
             waveform = model(**inputs).waveform.cpu().float()
             wav_parts.append(waveform)
             wav_parts.append(pause)
+            chunk_seconds = waveform.shape[-1] / float(sr)
+            timings.append({'start': round(cursor, 3), 'end': round(cursor + chunk_seconds, 3), 'text': txt})
+            cursor += chunk_seconds + pause_seconds
 
     del model, tokenizer
     gc.collect()
@@ -592,7 +642,7 @@ def synthesize_mms_tts(text, out_path):
         raise RuntimeError("MMS-TTS produced no audio frames.")
     full_wav = torch.cat(wav_parts[:-1], dim=-1)
     torchaudio.save(os.path.abspath(out_path), full_wav, sr)
-    return f"MMS-TTS ({script.capitalize()})"
+    return f"MMS-TTS ({script.capitalize()})", trim_timings(timings, full_wav.shape[-1] / float(sr))
 
 
 async def synthesize_neural(text, out_path, voice_name=None):
@@ -621,14 +671,43 @@ async def synthesize_neural(text, out_path, voice_name=None):
 
     temp_mp3 = out_path if out_path.endswith('.mp3') else out_path + '.temp.mp3'
     communicate = edge_tts.Communicate(clean, voice_id)
-    await communicate.save(temp_mp3)
+
+    # WordBoundary events carry 100-ns offsets: sentence spans can be rebuilt
+    # from them for free while the audio is streamed to disk.
+    boundaries = []
+    with open(temp_mp3, 'wb') as handle:
+        async for event in communicate.stream():
+            if event['type'] == 'audio':
+                handle.write(event['data'])
+            elif event['type'] == 'WordBoundary':
+                start = event['offset'] / 1e7
+                boundaries.append((start, (event['offset'] + event['duration']) / 1e7, event['text']))
 
     if temp_mp3 != out_path:
         subprocess.run(['afconvert', '-f', 'WAVE', '-d', 'LEI16', temp_mp3, out_path], check=True)
         if os.path.exists(temp_mp3):
             os.remove(temp_mp3)
 
-    return voice_id
+    return voice_id, timings_from_word_boundaries(clean, boundaries)
+
+
+def timings_from_word_boundaries(text, boundaries):
+    """Group edge-tts word boundaries into the sentence chunks the script uses."""
+    chunks = split_text_for_omnivoice(text, max_chars=280)
+    if not chunks or not boundaries:
+        return []
+    wanted = [len(item['text'].split()) for item in chunks]
+    if sum(wanted) != len(boundaries):
+        return estimate_timings(text, boundaries[-1][1] if boundaries else 0.0)
+    timings = []
+    cursor = 0
+    for item, count in zip(chunks, wanted):
+        group = boundaries[cursor:cursor + count]
+        cursor += count
+        if not group:
+            continue
+        timings.append({'start': round(group[0][0], 3), 'end': round(group[-1][1], 3), 'text': item['text'].strip()})
+    return timings
 
 
 def get_audio_duration(file_path):
@@ -669,14 +748,15 @@ def main():
     # 0. If the user explicitly selected MMS-TTS in Model Manager, run MMS-TTS first
     if preferred_engine == 'mms-tts':
         try:
-            used_voice = synthesize_mms_tts(text, out_path)
+            used_voice, timings = synthesize_mms_tts(text, out_path)
             duration = get_audio_duration(out_path)
             print(json.dumps({
                 'success': True,
                 'audioPath': out_path,
                 'duration': duration,
                 'voice': used_voice,
-                'engine': 'mms-tts'
+                'engine': 'mms-tts',
+                'timings': trim_timings(timings, duration) if duration else timings
             }))
             return
         except Exception as mms_err:
@@ -686,14 +766,15 @@ def main():
     custom_key = resolve_custom_voice_key(voice_name)
     if custom_key:
         try:
-            used_voice = synthesize_omnivoice_clone(text, out_path, custom_key)
+            used_voice, timings = synthesize_omnivoice_clone(text, out_path, custom_key)
             duration = get_audio_duration(out_path)
             print(json.dumps({
                 'success': True,
                 'audioPath': out_path,
                 'duration': duration,
                 'voice': used_voice,
-                'engine': 'omnivoice'
+                'engine': 'omnivoice',
+                'timings': trim_timings(timings, duration) if duration else timings
             }))
             return
         except Exception as clone_err:
@@ -701,14 +782,15 @@ def main():
 
     # 1b. Try offline MMS-TTS if installed before network/system fallbacks
     try:
-        used_voice = synthesize_mms_tts(text, out_path)
+        used_voice, timings = synthesize_mms_tts(text, out_path)
         duration = get_audio_duration(out_path)
         print(json.dumps({
             'success': True,
             'audioPath': out_path,
             'duration': duration,
             'voice': used_voice,
-            'engine': 'mms-tts'
+            'engine': 'mms-tts',
+            'timings': trim_timings(timings, duration) if duration else timings
         }))
         return
     except Exception:
@@ -716,14 +798,15 @@ def main():
 
     # 2. Ultra-realistic Neural Voices (Edge-TTS)
     try:
-        used_voice = asyncio.run(synthesize_neural(text, out_path, voice_name))
+        used_voice, timings = asyncio.run(synthesize_neural(text, out_path, voice_name))
         duration = get_audio_duration(out_path)
         print(json.dumps({
             'success': True,
             'audioPath': out_path,
             'duration': duration,
             'voice': used_voice,
-            'engine': 'neural'
+            'engine': 'neural',
+            'timings': trim_timings(timings, duration) if duration else timings
         }))
         return
     except Exception as e:
@@ -742,7 +825,8 @@ def main():
                 'audioPath': out_path,
                 'duration': duration,
                 'voice': fallback_voice,
-                'engine': 'system_fallback'
+                'engine': 'system_fallback',
+                'timings': estimate_timings(text, duration)
             }))
         except Exception as fallback_err:
             print(json.dumps({'error': str(e), 'fallbackError': str(fallback_err)}))

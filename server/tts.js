@@ -222,7 +222,8 @@ export async function synthesizeAudioLocal(text, outputPath, settings = {}, reso
           audioPath: lastJson.audioPath,
           duration: lastJson.duration || 0,
           voice: lastJson.voice,
-          engine: lastJson.engine
+          engine: lastJson.engine,
+          timings: Array.isArray(lastJson.timings) ? lastJson.timings : null
         });
       }
 

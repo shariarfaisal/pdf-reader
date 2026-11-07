@@ -985,11 +985,19 @@ class PipelineEngine {
       page.audio_path = ttsResult.audioPath;
       page.audio_duration = ttsResult.duration;
 
+      // Sentence timings let the reader highlight the exact line being spoken
+      // instead of guessing from playback progress. Absent for engines that
+      // cannot report per-chunk audio — the reader degrades gracefully then.
+      const audioTimings = Array.isArray(ttsResult.timings) && ttsResult.timings.length
+        ? JSON.stringify(ttsResult.timings)
+        : null;
+
       queries.upsertPage({
         projectId,
         pageNumber: pageNum,
         audioPath: ttsResult.audioPath,
         audioDuration: ttsResult.duration,
+        audioTimings,
         status: 'ready'
       });
       this.log(
