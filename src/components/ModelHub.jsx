@@ -33,12 +33,13 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { Button } from './ui/Button';
-import { Tag } from './ui/Badge';
+import { Badge, Tag } from './ui/Badge';
 import { Panel } from './ui/Panel';
 import { Field, TextInput, SelectInput } from './ui/Field';
 import { ProgressBar } from './ui/ProgressBar';
 import { DropdownMenu } from './ui/DropdownMenu';
 import { ConfirmModal } from './ui/ConfirmModal';
+import { ThemeToggle } from './ui/ThemeToggle';
 import { formatBytes } from '../lib/format';
 
 const TASK_TABS = [
@@ -69,6 +70,41 @@ const TASK_META = {
 function shortenHome(p) {
   if (!p || typeof p !== 'string') return '';
   return p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+}
+
+/** Weights path caption shared by the collapsed card footer and the expanded details. */
+function ModelPathRow({ model, copied, onCopy }) {
+  if (!model.resolvedPath) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-500 min-w-0">
+      <div className="truncate flex items-center gap-2 min-w-0" title={model.resolvedPath}>
+        <Folder className="w-3 h-3 text-slate-500 flex-shrink-0" aria-hidden="true" />
+        <span className="text-[10px] uppercase font-sans font-semibold tracking-wide flex-shrink-0">
+          {model.origin === 'referenced' ? 'Custom path' : 'Local path'}
+        </span>
+        <span className="truncate">{shortenHome(model.resolvedPath)}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={`Copy weights path for ${model.name}`}
+        title="Copy full path"
+        className="inline-flex items-center gap-1 h-6 text-[10.5px] text-slate-500 hover:text-slate-200 transition-colors flex-shrink-0 px-1.5 rounded hover:bg-obsidian-800 cursor-pointer"
+      >
+        {copied ? (
+          <>
+            <Check className="w-3 h-3 text-emerald-500" />
+            <span className="text-emerald-600 dark:text-emerald-400">Copied</span>
+          </>
+        ) : (
+          <>
+            <Copy className="w-3 h-3" />
+            <span>Copy</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
 }
 
 function getStatusBadge(model) {
@@ -111,13 +147,23 @@ function getStatusBadge(model) {
  * Used both inside the full-page `/models` route (`ModelHub`) and inside
  * `SettingsModal` (`Local AI Models` tab) so every model action is available everywhere.
  */
-export function ModelManagerView({ compact = false, onOpenFullHub = null, onSettingsChanged = null }) {
+export function ModelManagerView({ compact = false, onOpenFullHub = null, onSettingsChanged = null, refreshToken = 0 }) {
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [catalog, setCatalog] = useState({
     models: [],
     activeModels: { tts: 'omnivoice', asr: 'faster-whisper-large-v3-turbo', ocrTier: 'mac_first' },
     storage: null,
     pythonEnv: null
   });
+
+  const toggleExpanded = (id) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTask, setActiveTask] = useState('all');
@@ -178,6 +224,11 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
   useEffect(() => {
     loadCatalog();
   }, [loadCatalog]);
+
+  // Hosts bump `refreshToken` after settings that affect the cache are saved.
+  useEffect(() => {
+    if (refreshToken > 0) loadCatalog({ refresh: true });
+  }, [refreshToken, loadCatalog]);
 
   // Subscribe to SSE for real-time model_download progress events
   useEffect(() => {
@@ -421,216 +472,58 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
     });
   }, [catalog.models, activeTask, onlyInstalled, searchQuery]);
 
-  const activeTtsModel = useMemo(
-    () =>
-      catalog.models.find((m) => m.id === catalog.activeModels.tts) ||
-      catalog.models.find((m) => m.task === 'tts' && m.isInstalled),
-    [catalog.models, catalog.activeModels.tts]
-  );
-
-  const activeAsrModel = useMemo(
-    () =>
-      catalog.models.find((m) => m.id === catalog.activeModels.asr) ||
-      catalog.models.find((m) => m.task === 'asr' && m.isInstalled),
-    [catalog.models, catalog.activeModels.asr]
-  );
-
-  const ocrInstalledCount = useMemo(
-    () => catalog.models.filter((m) => m.task === 'ocr' && m.isInstalled).length,
-    [catalog.models]
-  );
-
   return (
     <div className="space-y-4">
-      {/* Top Active Task Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {/* 1. Active TTS */}
-        <div className="rounded-xl border border-obsidian-800 bg-obsidian-900/70 p-4 flex flex-col justify-between gap-3 shadow-sm hover:border-obsidian-700/80 transition-colors">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-400 flex items-center justify-center flex-shrink-0">
-                <Volume2 className="w-3.5 h-3.5" />
-              </div>
-              <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
-                Voice Cloning &amp; TTS
-              </span>
-            </div>
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10.5px] font-medium border ${
-                activeTtsModel?.isInstalled
-                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                  : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  activeTtsModel?.isInstalled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-                }`}
-              />
-              {activeTtsModel?.isInstalled ? 'Ready & Active' : 'Needs Model'}
-            </span>
-          </div>
-          <div>
-            <div className="text-[14px] font-semibold text-slate-100 truncate" title={activeTtsModel?.name}>
-              {activeTtsModel?.name || 'OmniVoice 613M'}
-            </div>
-            <div className="text-xs text-slate-400 font-mono truncate mt-0.5 flex items-center gap-1.5">
-              <span>{activeTtsModel?.repoId || 'k2-fsa/OmniVoice'}</span>
+      {/* Quiet Compact Operational Summary Strip per Section 7 */}
+      <div className="rounded-xl border border-obsidian-700/80 bg-obsidian-850 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-slate-400">
+          <span className="font-semibold text-slate-200">
+            {counts.installed} of {catalog.models.length} models installed
+          </span>
+          <span className="text-slate-600">·</span>
+          <span>
+            {formatBytes(catalog.storage?.totalInstalledBytes || 0)} on disk
+          </span>
+          {catalog.storage?.diskFreeBytes ? (
+            <>
               <span className="text-slate-600">·</span>
-              <span className="text-slate-300">
-                {activeTtsModel?.sizeBytes
-                  ? formatBytes(activeTtsModel.sizeBytes)
-                  : formatBytes(activeTtsModel?.expectedBytes || 0)}
+              <span>{formatBytes(catalog.storage.diskFreeBytes)} free disk space</span>
+            </>
+          ) : null}
+          {catalog.pythonEnv?.version && (
+            <>
+              <span className="text-slate-600">·</span>
+              <span className="font-mono text-slate-300">
+                Python {catalog.pythonEnv.version} {catalog.pythonEnv.mps ? '(Apple MPS)' : ''}
               </span>
-            </div>
-          </div>
+            </>
+          )}
         </div>
 
-        {/* 2. Active ASR */}
-        <div className="rounded-xl border border-obsidian-800 bg-obsidian-900/70 p-4 flex flex-col justify-between gap-3 shadow-sm hover:border-obsidian-700/80 transition-colors">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
-                <Mic className="w-3.5 h-3.5" />
-              </div>
-              <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
-                Sample Transcription
-              </span>
-            </div>
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10.5px] font-medium border ${
-                activeAsrModel?.isInstalled
-                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                  : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  activeAsrModel?.isInstalled ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-                }`}
-              />
-              {activeAsrModel?.isInstalled ? 'Ready & Active' : 'Needs Model'}
-            </span>
-          </div>
-          <div>
-            <div className="text-[14px] font-semibold text-slate-100 truncate" title={activeAsrModel?.name}>
-              {activeAsrModel?.name || 'Faster-Whisper Large v3 Turbo'}
-            </div>
-            <div className="text-xs text-slate-400 font-mono truncate mt-0.5 flex items-center gap-1.5">
-              <span>{activeAsrModel?.repoId || 'deepdml/faster-whisper-large-v3-turbo-ct2'}</span>
-              <span className="text-slate-600">·</span>
-              <span className="text-slate-300">
-                {activeAsrModel?.sizeBytes
-                  ? formatBytes(activeAsrModel.sizeBytes)
-                  : formatBytes(activeAsrModel?.expectedBytes || 0)}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* 3. Local OCR & Storage */}
-        <div className="rounded-xl border border-obsidian-800 bg-obsidian-900/70 p-4 flex flex-col justify-between gap-3 shadow-sm hover:border-obsidian-700/80 transition-colors">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center flex-shrink-0">
-                <HardDrive className="w-3.5 h-3.5" />
-              </div>
-              <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
-                Storage &amp; Local OCR
-              </span>
-            </div>
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10.5px] font-medium bg-slate-800/80 text-slate-300 border border-slate-700/60">
-              {catalog.storage?.installedCount || 0} of {catalog.storage?.totalCount || 0} Installed
-            </span>
-          </div>
-          <div>
-            <div className="text-[14px] font-semibold text-slate-100 truncate">
-              {formatBytes(catalog.storage?.totalInstalledBytes || 0)} on disk
-            </div>
-            <div className="text-xs text-slate-400 font-mono truncate mt-0.5 flex items-center gap-1.5">
-              <span>
-                {catalog.storage?.diskFreeBytes ? `${formatBytes(catalog.storage.diskFreeBytes)} free` : ''}
-              </span>
-              <span className="text-slate-600">·</span>
-              <span className="text-slate-300">{ocrInstalledCount}/4 OCR ready</span>
-            </div>
-          </div>
+        <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
+          <Folder className="w-3.5 h-3.5 text-slate-500" />
+          <span
+            className="truncate max-w-[240px] cursor-pointer hover:text-slate-200"
+            title={catalog.storage?.cacheDir || ''}
+            onClick={() => copyCacheDir(catalog.storage?.cacheDir)}
+          >
+            {shortenHome(catalog.storage?.cacheDir || '~/.cache/huggingface/hub')}
+          </span>
+          <button
+            type="button"
+            onClick={() => copyCacheDir(catalog.storage?.cacheDir)}
+            aria-label="Copy cache directory path"
+            className="text-slate-400 hover:text-slate-100 p-1 h-6 w-6 inline-flex items-center justify-center rounded hover:bg-obsidian-800 cursor-pointer"
+            title="Copy cache directory path"
+          >
+            {copiedCacheDir ? (
+              <Check className="w-3 h-3 text-emerald-500" />
+            ) : (
+              <Copy className="w-3 h-3" />
+            )}
+          </button>
         </div>
       </div>
-
-      {/* Python Runtime & Cache Directory Info Bar */}
-      {catalog.pythonEnv && (
-        <div className="rounded-xl border border-obsidian-800/90 bg-obsidian-950/60 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0">
-            <div className="flex items-center gap-1.5 text-slate-300">
-              <Cpu className="w-3.5 h-3.5 text-brand-400 flex-shrink-0" />
-              <span className="font-medium text-slate-200">Runtime:</span>
-              <code
-                className="font-mono text-[11px] text-slate-300 bg-obsidian-900 border border-obsidian-800 px-2 py-0.5 rounded truncate max-w-[240px]"
-                title={catalog.pythonEnv.pythonBin}
-              >
-                {shortenHome(catalog.pythonEnv.pythonBin)}
-              </code>
-            </div>
-
-            {catalog.pythonEnv.version && (
-              <span className="text-slate-400 font-mono text-[11px]">
-                Python {catalog.pythonEnv.version}
-              </span>
-            )}
-
-            {catalog.pythonEnv.mps && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Apple MPS GPU
-              </span>
-            )}
-
-            <div className="h-3 w-px bg-obsidian-800 hidden sm:block" />
-
-            <div className="flex items-center gap-2 text-[11px] text-slate-400">
-              {catalog.pythonEnv.packages?.omnivoice && (
-                <span className="inline-flex items-center gap-1 text-slate-300">
-                  <span className="w-1 h-1 rounded-full bg-brand-400" /> OmniVoice
-                </span>
-              )}
-              {catalog.pythonEnv.packages?.faster_whisper && (
-                <span className="inline-flex items-center gap-1 text-slate-300">
-                  <span className="w-1 h-1 rounded-full bg-emerald-400" /> Faster-Whisper
-                </span>
-              )}
-              {catalog.pythonEnv.packages?.sherpa_onnx && (
-                <span className="inline-flex items-center gap-1 text-slate-300">
-                  <span className="w-1 h-1 rounded-full bg-sky-400" /> Sherpa-ONNX
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono flex-shrink-0">
-            <Folder className="w-3.5 h-3.5 text-slate-500" />
-            <span
-              className="truncate max-w-[260px] cursor-pointer hover:text-slate-200"
-              title={catalog.storage?.cacheDir || ''}
-              onClick={() => copyCacheDir(catalog.storage?.cacheDir)}
-            >
-              {shortenHome(catalog.storage?.cacheDir || '~/.cache/huggingface/hub')}
-            </span>
-            <button
-              type="button"
-              onClick={() => copyCacheDir(catalog.storage?.cacheDir)}
-              className="text-slate-500 hover:text-slate-200 transition-colors p-1"
-              title="Copy cache directory path"
-            >
-              {copiedCacheDir ? (
-                <Check className="w-3 h-3 text-emerald-400" />
-              ) : (
-                <Copy className="w-3 h-3" />
-              )}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Alerts / Notices */}
       {error && (
@@ -640,7 +533,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
           <button
             type="button"
             onClick={() => setError(null)}
-            className="text-rose-300 hover:text-white"
+            className="text-rose-400 hover:text-rose-200 cursor-pointer"
             aria-label="Dismiss error"
           >
             <X className="w-4 h-4" />
@@ -655,7 +548,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
           <button
             type="button"
             onClick={() => setNotice(null)}
-            className="text-emerald-300 hover:text-white"
+            className="text-emerald-400 hover:text-emerald-200 cursor-pointer"
             aria-label="Dismiss notice"
           >
             <X className="w-3.5 h-3.5" />
@@ -663,10 +556,15 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
         </div>
       )}
 
-      {/* Filter Tabs + Search + Actions */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+      {/* Filter Tabs + Search + Actions — tabs and controls always stack so
+          neither the tab strip nor the search field ever gets squeezed. */}
+      <div className="flex flex-col gap-2.5">
         {/* Segmented Task Tabs */}
-        <div className="inline-flex items-center p-1 rounded-xl bg-obsidian-950/80 border border-obsidian-800 gap-1 overflow-x-auto max-w-full flex-shrink-0">
+        <div
+          role="group"
+          aria-label="Filter models by pipeline task"
+          className="inline-flex flex-wrap items-center p-1 rounded-xl bg-obsidian-950/80 border border-obsidian-800 gap-1 max-w-full self-start"
+        >
           {TASK_TABS.map((tab) => {
             const Icon = tab.icon;
             const active = activeTask === tab.id;
@@ -674,18 +572,21 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
               <button
                 key={tab.id}
                 type="button"
+                aria-pressed={active}
                 onClick={() => setActiveTask(tab.id)}
-                className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+                className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 ${
                   active
-                    ? 'bg-obsidian-800 text-white shadow-sm border border-obsidian-700/80'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-obsidian-900/50'
+                    ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 border-indigo-500/40 shadow-sm'
+                    : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-200 hover:bg-obsidian-800/60'
                 }`}
               >
                 <Icon className="w-3.5 h-3.5" />
                 <span>{tab.label}</span>
                 <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                    active ? 'bg-obsidian-700 text-brand-300' : 'bg-obsidian-900 text-slate-500'
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono tabular-nums ${
+                    active
+                      ? 'bg-indigo-500/20 text-indigo-700 dark:text-indigo-200'
+                      : 'bg-obsidian-800 text-slate-500 dark:text-slate-400'
                   }`}
                 >
                   {counts[tab.id] ?? 0}
@@ -696,43 +597,49 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
         </div>
 
         {/* Search & Actions Toolbar */}
-        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-start sm:justify-end flex-1 min-w-0">
-          {/* Quick filter toggle: installed only */}
-          <button
-            type="button"
-            onClick={() => setOnlyInstalled((v) => !v)}
-            className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium transition-colors border flex-shrink-0 whitespace-nowrap ${
-              onlyInstalled
-                ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30'
-                : 'bg-obsidian-900/70 text-slate-400 border-obsidian-800 hover:text-slate-200 hover:border-obsidian-700'
-            }`}
-            title="Filter to installed models only"
-          >
-            <Check className="w-3 h-3" />
-            <span>Installed ({counts.installed})</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2 justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Quick filter toggle: installed only */}
+            <button
+              type="button"
+              aria-pressed={onlyInstalled}
+              onClick={() => setOnlyInstalled((v) => !v)}
+              className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-medium transition-colors border flex-shrink-0 whitespace-nowrap cursor-pointer ${
+                onlyInstalled
+                  ? 'is-selected-token border-indigo-400/80 font-semibold shadow-2xs'
+                  : 'bg-obsidian-850 text-slate-400 border-obsidian-700 hover:text-slate-200 hover:bg-obsidian-750'
+              }`}
+              title={onlyInstalled ? 'Showing installed models only (click to show all)' : 'Click to filter to installed models only'}
+            >
+              <Check className={`w-3.5 h-3.5 ${onlyInstalled ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true" />
+              <span>Installed only ({counts.installed})</span>
+            </button>
 
-          {/* Search Input */}
-          <div className="relative flex-1 sm:w-56 min-w-[150px]">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter models, repos…"
-              className="w-full h-8 bg-obsidian-950 border border-obsidian-800 rounded-lg pl-8 pr-7 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-all"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+            {/* Search Input */}
+            <div className="relative w-full sm:w-60 flex-shrink-0">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter models, repos…"
+                aria-label="Filter models"
+                className="w-full h-8 bg-obsidian-950 border border-obsidian-800 rounded-lg pl-8 pr-7 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-all"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
+          <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="secondary"
             size="sm"
@@ -744,7 +651,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
           </Button>
 
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             icon={RefreshCw}
             isLoading={refreshing}
@@ -766,6 +673,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
               Full Hub
             </Button>
           )}
+          </div>
         </div>
       </div>
 
@@ -777,7 +685,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
         >
           <div className="flex items-center justify-between border-b border-obsidian-800 pb-3">
             <div>
-              <h4 className="text-sm font-semibold text-white">
+              <h4 className="text-sm font-semibold text-slate-100">
                 Register Custom Hugging Face or Local Model
               </h4>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -787,7 +695,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
             <button
               type="button"
               onClick={() => setShowAddCustom(false)}
-              className="text-slate-400 hover:text-white"
+              className="text-slate-400 hover:text-slate-100 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -956,13 +864,15 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
                 : [])
             ];
 
+            const isExpanded = expandedIds.has(model.id);
+
             return (
               <div
                 key={model.id}
                 className={`rounded-xl border transition-all duration-150 p-4 space-y-3 ${
                   model.isActive && (model.task === 'tts' || model.task === 'asr')
-                    ? 'border-brand-500/40 bg-gradient-to-b from-brand-950/15 via-obsidian-900/80 to-obsidian-900/95 shadow-sm shadow-brand-500/5'
-                    : 'border-obsidian-800 bg-obsidian-900/50 hover:border-obsidian-700/80 hover:bg-obsidian-900/80'
+                    ? 'border-indigo-500/40 bg-indigo-500/5 shadow-2xs'
+                    : 'border-obsidian-700/80 bg-obsidian-900 hover:border-obsidian-600'
                 }`}
               >
                 {/* Header Row: Task Icon + Model Info + Action Buttons */}
@@ -978,67 +888,65 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
                     {/* Title + Status Badges + Description */}
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-[14.5px] font-semibold text-slate-100">
+                        <h3 className="text-sm font-semibold text-slate-100">
                           {model.name}
                         </h3>
 
-                        {/* Status Tag */}
+                        {/* Precise Status Badge per Section 7 */}
                         {model.isActive && (model.task === 'tts' || model.task === 'asr') ? (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10.5px] font-semibold bg-brand-500/15 text-brand-300 border border-brand-500/30">
-                            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />
-                            Active Engine
-                          </span>
+                          <Badge status="ready" label="Default engine" size="xs" />
+                        ) : model.isInstalled ? (
+                          <Badge status="completed" label="Installed" size="xs" />
+                        ) : isDownloading ? (
+                          <Badge
+                            status="running"
+                            label={`Downloading ${model.download?.percent ? `${model.download.percent}%` : '…'}`}
+                            size="xs"
+                          />
                         ) : (
-                          <Tag tone={badge.tone} size="xs" dot={badge.dot}>
-                            {badge.label}
-                          </Tag>
+                          <Badge status="idle" label="Available" size="xs" />
                         )}
 
-                        {/* Feature Badges (Subtle, max 2) */}
+                        <span className="text-[11px] font-mono text-slate-400">
+                          {model.sizeBytes > 0
+                            ? formatBytes(model.sizeBytes)
+                            : model.expectedBytes > 0
+                            ? `~${formatBytes(model.expectedBytes)}`
+                            : ''}
+                        </span>
+
+                        {/* Feature Badges */}
                         {model.supportsCloning && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-500/25">
                             Zero-Shot Clone
-                          </span>
-                        )}
-                        {model.recommended && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                            Recommended
                           </span>
                         )}
                       </div>
 
-                      <p className="text-xs text-slate-400 leading-relaxed max-w-3xl">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-[68ch] line-clamp-2">
                         {model.description}
                       </p>
                     </div>
                   </div>
 
-                  {/* Actions Suite */}
+                  {/* Actions Suite with Explicit Action Verbs per Section 7 */}
                   <div className="flex items-center gap-1.5 self-end sm:self-start flex-shrink-0">
                     {canActivate && (
                       <Button
                         variant="secondary"
-                        size="sm"
-                        icon={Sparkles}
+                        size="xs"
                         isLoading={busyModelId === model.id}
                         onClick={() => handleActivateModel(model)}
-                        title={`Use ${model.name} as the active ${model.task.toUpperCase()} engine`}
+                        title={`Use ${model.name} as default ${model.task.toUpperCase()} engine`}
                       >
-                        Set Active
+                        Set as default
                       </Button>
-                    )}
-
-                    {model.isActive && (model.task === 'tts' || model.task === 'asr') && (
-                      <span className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium text-brand-300 bg-brand-500/10 border border-brand-500/20">
-                        <Check className="w-3.5 h-3.5 text-brand-400" />
-                        <span>Active</span>
-                      </span>
                     )}
 
                     {isDownloading ? (
                       <Button
                         variant="danger"
-                        size="sm"
+                        size="xs"
                         icon={X}
                         isLoading={busyModelId === model.id}
                         onClick={() => handleCancelDownload(model.id)}
@@ -1049,25 +957,32 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
                       !model.isInstalled && (
                         <Button
                           variant="primary"
-                          size="sm"
+                          size="xs"
                           icon={Download}
                           isLoading={busyModelId === model.id}
                           onClick={() => handleDownload(model)}
                         >
-                          {model.status === 'incomplete'
-                            ? 'Resume'
-                            : model.sourceType === 'binary'
-                              ? 'Build'
-                              : 'Download'}
+                          {model.status === 'incomplete' ? 'Resume' : 'Install'}
                         </Button>
                       )
                     )}
+
+                    {/* View Details Toggle */}
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      aria-expanded={isExpanded}
+                      aria-controls={`model-details-${model.id}`}
+                      onClick={() => toggleExpanded(model.id)}
+                    >
+                      {isExpanded ? 'Hide details' : 'View details'}
+                    </Button>
 
                     {/* Secondary Actions Dropdown */}
                     <DropdownMenu
                       icon={MoreVertical}
                       showChevron={false}
-                      size="icon-sm"
+                      size="icon-xs"
                       variant="ghost"
                       title="More actions"
                       items={menuItems}
@@ -1075,119 +990,75 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
                   </div>
                 </div>
 
-                {/* Specs & Metadata Strip */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-1 text-xs text-slate-400 border-t border-obsidian-800/80">
-                  {model.repoId && (
-                    <a
-                      href={`https://huggingface.co/${model.repoId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-slate-300 hover:text-brand-300 transition-colors font-mono text-[11px]"
-                    >
-                      <FolderGit2 className="w-3.5 h-3.5 text-brand-400" />
-                      <span>{model.repoId}</span>
-                      <ExternalLink className="w-2.5 h-2.5 opacity-60" />
-                    </a>
-                  )}
-
-                  <div className="flex items-center gap-1 font-mono text-[11px]">
-                    <HardDrive className="w-3.5 h-3.5 text-slate-500" />
-                    <span>
-                      Size:{' '}
-                      <strong className="text-slate-200 font-semibold">
-                        {model.sizeBytes > 0
-                          ? formatBytes(model.sizeBytes)
-                          : model.expectedBytes > 0
-                            ? `~${formatBytes(model.expectedBytes)}`
-                            : 'Custom'}
-                      </strong>
-                    </span>
-                  </div>
-
-                  {model.ramRequirement && (
-                    <div className="flex items-center gap-1 font-mono text-[11px]">
-                      <Cpu className="w-3.5 h-3.5 text-slate-500" />
-                      <span>RAM: {model.ramRequirement}</span>
-                    </div>
-                  )}
-
-                  {model.languages?.length > 0 && (
-                    <div className="flex items-center gap-1 text-[11px]">
-                      <Globe className="w-3.5 h-3.5 text-slate-500" />
-                      <span>{model.languages.join(', ')}</span>
-                    </div>
-                  )}
-
-                  {model.license && (
-                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                      <Scale className="w-3.5 h-3.5 text-slate-500" />
-                      <span>{model.license}</span>
-                    </div>
-                  )}
-                </div>
-
                 {/* Downloading Progress Bar */}
                 {isDownloading && (
-                  <div className="rounded-lg bg-obsidian-950/80 border border-obsidian-800 p-3 space-y-2">
+                  <div className="rounded-lg bg-obsidian-950/80 border border-obsidian-750 p-3 space-y-2">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-300 flex items-center gap-1.5 font-medium">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
                         {model.download?.currentFile || 'Downloading model files…'}
                       </span>
-                      <span className="font-mono text-amber-300 font-semibold">
+                      <span className="font-mono text-indigo-400 font-semibold">
                         {model.download?.percent || 0}%
                       </span>
                     </div>
                     <ProgressBar
                       value={model.download?.percent || 0}
-                      color="amber"
-                      size="sm"
+                      height="h-1.5"
+                      showPercent={false}
                     />
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                      <span>
-                        {model.download?.downloadedBytes
-                          ? `${formatBytes(model.download.downloadedBytes)} / ${formatBytes(
-                              model.download?.totalBytes || model.expectedBytes || 0
-                            )}`
-                          : 'Starting transfer…'}
-                      </span>
-                      {model.download?.speedBps > 0 && (
-                        <span>{formatBytes(model.download.speedBps)}/s</span>
-                      )}
-                    </div>
                   </div>
                 )}
 
-                {/* Resolved Local Path Footer */}
-                {model.resolvedPath && !isEditingRef && (
-                  <div className="flex items-center justify-between gap-2 rounded-lg bg-obsidian-950/60 border border-obsidian-800/80 px-3 py-1.5 text-[11px] font-mono text-slate-400">
-                    <div className="truncate flex items-center gap-2 min-w-0" title={model.resolvedPath}>
-                      <Folder className="w-3 h-3 text-slate-500 flex-shrink-0" />
-                      <span className="text-slate-500 text-[10px] uppercase font-sans font-semibold flex-shrink-0">
-                        {model.origin === 'referenced' ? 'Custom Path:' : 'Local Path:'}
-                      </span>
-                      <span className="text-slate-300 truncate">
-                        {shortenHome(model.resolvedPath)}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => copyPath(model.id, model.resolvedPath)}
-                      className="inline-flex items-center gap-1 text-[10.5px] text-slate-400 hover:text-white transition-colors flex-shrink-0 px-1.5 py-0.5 rounded hover:bg-obsidian-800"
-                      title="Copy full path"
-                    >
-                      {copiedPathId === model.id ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>Copy</span>
-                        </>
+                {/* Expandable Technical Details Area per Section 7 */}
+                {isExpanded && (
+                  <div
+                    id={`model-details-${model.id}`}
+                    className="pt-2.5 border-t border-obsidian-700/60 space-y-2 text-xs text-slate-400"
+                  >
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono">
+                      {model.repoId && (
+                        <a
+                          href={`https://huggingface.co/${model.repoId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-slate-300 hover:text-indigo-400 transition-colors"
+                        >
+                          <FolderGit2 className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>{model.repoId}</span>
+                          <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                        </a>
                       )}
-                    </button>
+                      {model.ramRequirement && (
+                        <span>RAM: {model.ramRequirement}</span>
+                      )}
+                      {model.languages?.length > 0 && (
+                        <span>Languages: {model.languages.join(', ')}</span>
+                      )}
+                      {model.license && (
+                        <span>License: {model.license}</span>
+                      )}
+                    </div>
+
+                    {!isEditingRef && (
+                      <ModelPathRow
+                        model={model}
+                        copied={copiedPathId === model.id}
+                        onCopy={() => copyPath(model.id, model.resolvedPath)}
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* Resolved Local Path Footer — only while collapsed; the expanded
+                    view already shows the full path, so never render it twice. */}
+                {!isEditingRef && !isExpanded && model.resolvedPath && (
+                  <div className="border-t border-obsidian-700/40 pt-2">
+                    <ModelPathRow
+                      model={model}
+                      copied={copiedPathId === model.id}
+                      onCopy={() => copyPath(model.id, model.resolvedPath)}
+                    />
                   </div>
                 )}
 
@@ -1202,7 +1073,7 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
                       <button
                         type="button"
                         onClick={() => setEditingRefId(null)}
-                        className="text-slate-500 hover:text-white"
+                        className="text-slate-500 hover:text-slate-100 cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -1288,52 +1159,57 @@ export function ModelManagerView({ compact = false, onOpenFullHub = null, onSett
  */
 export function ModelHub({ onBack, onOpenSettings, onOpenVoices, onOpenUsage, onSettingsChanged }) {
   return (
-    <div className="min-h-screen bg-obsidian-950 text-slate-100 flex flex-col">
-      <header className="sticky top-0 z-30 border-b border-obsidian-800/80 bg-obsidian-950/85 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between gap-4">
+    <div className="min-h-screen bg-app text-slate-100 flex flex-col">
+      <header className="sticky top-0 z-30 border-b border-obsidian-700/80 bg-obsidian-850/95 backdrop-blur-md">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 md:px-8 h-14 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <Button
               variant="ghost"
-              size="icon-sm"
+              size="sm"
               icon={ArrowLeft}
               onClick={onBack}
-              title="Back to library"
-              aria-label="Back to library"
-            />
-            <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-indigo-500 flex items-center justify-center shadow-lg shadow-brand-500/20 flex-shrink-0">
-              <Boxes className="w-4 h-4 text-obsidian-950" />
+              className="text-slate-300"
+            >
+              Library
+            </Button>
+            <span className="text-slate-500 font-normal">/</span>
+            <span className="text-sm font-semibold text-slate-100 truncate">
+              Models
             </span>
-            <div className="min-w-0">
-              <p className="text-[13.5px] font-semibold text-white leading-tight truncate">
-                Local AI Model Hub
-              </p>
-              <p className="text-[11px] text-slate-400 leading-tight truncate hidden sm:block">
-                Zero-shot voice cloning, TTS, speech transcription (ASR), and local OCR
-              </p>
-            </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <nav className="flex items-center gap-1.5">
             {onOpenVoices && (
               <Button variant="ghost" size="sm" icon={Mic} onClick={onOpenVoices}>
-                <span className="hidden sm:inline">Voice Studio</span>
+                <span className="hidden sm:inline">Voices</span>
               </Button>
             )}
             {onOpenUsage && (
               <Button variant="ghost" size="sm" icon={Activity} onClick={onOpenUsage}>
-                <span className="hidden sm:inline">API Usage</span>
+                <span className="hidden sm:inline">Usage</span>
               </Button>
             )}
             {onOpenSettings && (
-              <Button variant="secondary" size="sm" icon={SettingsIcon} onClick={onOpenSettings}>
+              <Button variant="ghost" size="sm" icon={SettingsIcon} onClick={onOpenSettings}>
                 <span className="hidden sm:inline">Settings</span>
               </Button>
             )}
-          </div>
+            <div className="h-4 w-px bg-obsidian-700/60 mx-1" aria-hidden="true" />
+            <ThemeToggle />
+          </nav>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-6">
+      <main className="flex-1 max-w-[1280px] w-full mx-auto px-4 sm:px-6 md:px-8 py-8">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-100">
+            Models
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Local model weights and runtimes for voice cloning, speech recognition, and OCR.
+          </p>
+        </div>
+
         <ModelManagerView onSettingsChanged={onSettingsChanged} />
       </main>
     </div>

@@ -68,6 +68,18 @@ DELETE /api/usage/logs?before=<epochMs> # prune old rows
 `from`/`to` accept `YYYY-MM-DD` (inclusive local days) or epoch milliseconds.
 `summary` returns `totals`, `byDay`, `byModel`, `byStage`, and `byProject`.
 
+## Cache reads
+
+Provider-side cache reads are reported, not implemented. The upstream returns how much of a
+request it served from its own cache; the Antigravity proxy forwards
+`usageMetadata.cachedContentTokenCount` as `usage.prompt_tokens_details.cached_tokens`, and the
+dashboard shows it as **Cache reads** with a hit rate (`cachedTokens / inputTokens`).
+
+Measured behaviour on the Cloud Code Assist lane: caching is **exact-request only** — an identical
+request repeats at ~73% cached tokens, the same prefix with a different tail scores 0%, and prompts
+under ~1,024 tokens never cache. Every page body is unique, so a normal page-by-page refiner run
+records 0. Nothing to configure; it is informational.
+
 ## Dashboard
 
 `src/components/ApiUsageDashboard.jsx`, reachable from **API Usage** in the library header and
@@ -75,7 +87,8 @@ the activity icon in the reader toolbar:
 
 - date presets (today / 7d / 30d / 90d / all / custom) plus project, stage, model, status, and
   free-text filters
-- KPI cards: spend (billed), list-price value, calls, input/output tokens, avg latency, error rate
+- KPI cards: spend (billed), list-price value, calls, input/output tokens, cache reads (with hit
+  rate), avg latency, error rate
 - daily spend chart (billed, else list price) and by-model / by-stage / by-project breakdowns
 - paginated call log (50/page) and CSV export of the current filter
 

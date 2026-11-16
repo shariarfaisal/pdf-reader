@@ -1,4 +1,4 @@
-#!/Users/macbookm2air/Desktop/personal-projects/voicestudio/.venv/bin/python
+#!/usr/bin/env python3
 """
 Low-Memory Single-Process Audiobook TTS Synthesizer (Optimized for 8GB M2 MacBook Air)
 Supports:

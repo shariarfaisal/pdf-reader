@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>Listen</title>
+  <style>
+    :root { --bg: #0b0d12; --card: #161a23; --line: #262c39; --text: #e8ebf2; --muted: #8a93a6; --accent: #7c8cff; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; display: flex; flex-direction: column; }
+    main { flex: 1; display: flex; flex-direction: column; justify-content: center; width: 100%; max-width: 480px; margin: 0 auto; padding: 24px 20px calc(24px + env(safe-area-inset-bottom)); gap: 22px; }
+    .meta { text-align: center; }
+    .title { font-size: 18px; font-weight: 600; margin: 0; word-break: break-word; }
+    .page { color: var(--muted); font-size: 14px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .scrub { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; }
+    .transport { display: flex; align-items: center; justify-content: space-between; }
+    .btn { background: none; border: 0; color: var(--text); width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; padding: 0; }
+    .btn:disabled { opacity: 0.3; }
+    .btn svg { width: 28px; height: 28px; fill: currentColor; }
+    .btn.play { width: 76px; height: 76px; background: var(--accent); color: #0b0d12; }
+    .btn.play svg { width: 34px; height: 34px; }
+    .bottom { display: flex; align-items: center; justify-content: space-between; }
+    .speed { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+    select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+    .status { min-height: 20px; text-align: center; color: var(--muted); font-size: 14px; }
+    .status.error { color: #ff8a8a; }
+    .download { color: var(--accent); font-size: 14px; text-decoration: none; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="meta">
+      <h1 class="title" id="title">Loading…</h1>
+      <div class="page" id="page"></div>
+    </div>
+
+    <div class="scrub">
+      <span id="elapsed">0:00</span>
+      <input id="seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek" disabled />
+      <span id="remaining">-0:00</span>
+    </div>
+
+    <div class="transport">
+      <button class="btn" id="prev" type="button" aria-label="Previous page" disabled>
+        <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
+      </button>
+      <button class="btn" id="back" type="button" aria-label="Back 10 seconds" disabled>
+        <svg viewBox="0 0 24 24"><path d="M12.5 3a9 9 0 1 0 8.5 12h-2.1A7 7 0 1 1 12.5 5v3l4-4-4-4v3zM9.3 8.6v6.8H8V10l-1.2.4v-1l2-.8h.5zm2.8 0c1 0 1.6.7 1.6 1.9v.4c0 1.2-.6 1.9-1.6 1.9s-1.6-.7-1.6-1.9v-.4c0-1.2.6-1.9 1.6-1.9zm0 1c-.4 0-.6.4-.6.9v.4c0 .5.2.9.6.9s.6-.4.6-.9v-.4c0-.5-.2-.9-.6-.9z"/></svg>
+      </button>
+      <button class="btn play" id="toggle" type="button" aria-label="Play" disabled>
+        <svg viewBox="0 0 24 24" id="icon-play"><path d="M8 5v14l11-7z"/></svg>
+        <svg viewBox="0 0 24 24" id="icon-pause" style="display: none"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+      </button>
+      <button class="btn" id="forward" type="button" aria-label="Forward 10 seconds" disabled>
+        <svg viewBox="0 0 24 24"><path d="M11.5 3a9 9 0 1 1-8.5 12h2.1A7 7 0 1 0 11.5 5v3l-4-4 4-4v3zM9.3 8.6v6.8H8V10l-1.2.4v-1l2-.8h.5zm2.8 0c1 0 1.6.7 1.6 1.9v.4c0 1.2-.6 1.9-1.6 1.9s-1.6-.7-1.6-1.9v-.4c0-1.2.6-1.9 1.6-1.9zm0 1c-.4 0-.6.4-.6.9v.4c0 .5.2.9.6.9s.6-.4.6-.9v-.4c0-.5-.2-.9-.6-.9z"/></svg>
+      </button>
+      <button class="btn" id="next" type="button" aria-label="Next page" disabled>
+        <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18V6l8.5 6z"/></svg>
+      </button>
+    </div>
+
+    <div class="bottom">
+      <label class="speed">Speed
+        <select id="speed" aria-label="Playback speed"></select>
+      </label>
+      <a class="download" id="download" href="#" download hidden>Download MP3</a>
+    </div>
+
+    <div class="status" id="status" role="status"></div>
+  </main>
+
+  <audio id="player" preload="auto"></audio>
+
+  <script>
+    const SPEEDS = [0.75, 0.85, 1, 1.25, 1.5, 1.75, 2];
+    const token = location.pathname.split('/').filter(Boolean).pop();
+    const player = document.getElementById('player');
+    const $ = (id) => document.getElementById(id);
+    const seek = $('seek');
+    const speedSelect = $('speed');
+    const prevBtn = $('prev');
+    const nextBtn = $('next');
+    const backBtn = $('back');
+    const fwdBtn = $('forward');
+    const toggle = $('toggle');
+    const statusBox = $('status');
+    const SPEED_KEY = 'listen:speed';
+    const RESUME_KEY = `listen:${token}`;
+
+    let pages = [];
+    let index = -1;
+    let bookName = '';
+    let scrubbing = false;
+
+    function store(key, value) { try { localStorage.setItem(key, String(value)); } catch {} }
+    function recall(key) { try { return localStorage.getItem(key); } catch { return null; } }
+
+    function clock(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+      const s = Math.floor(seconds);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = String(s % 60).padStart(2, '0');
+      return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+    }
+
+    function setStatus(message, isError = false) {
+      statusBox.textContent = message || '';
+      statusBox.classList.toggle('error', isError);
+    }
+
+    function setPlayIcon(playing) {
+      $('icon-play').style.display = playing ? 'none' : 'block';
+      $('icon-pause').style.display = playing ? 'block' : 'none';
+      toggle.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    }
+
+    function updateNav() {
+      prevBtn.disabled = index <= 0;
+      nextBtn.disabled = index < 0 || index >= pages.length - 1;
+    }
+
+    function updateSession() {
+      if (!('mediaSession' in navigator) || index < 0) return;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: `Page ${pages[index].number}`,
+        artist: bookName,
+        album: bookName
+      });
+    }
+
+    function load(i, autoplay) {
+      if (i < 0 || i >= pages.length) return;
+      index = i;
+      store(RESUME_KEY, i);
+      player.src = pages[i].audioUrl;
+      player.playbackRate = Number(speedSelect.value);
+      $('page').textContent = `Page ${pages[i].number} of ${pages.length}`;
+      seek.value = 0;
+      seek.max = 0;
+      $('elapsed').textContent = '0:00';
+      $('remaining').textContent = '-0:00';
+      setStatus('');
+      updateNav();
+      updateSession();
+      if (autoplay) player.play().catch(() => setStatus('Tap play to start audio.'));
+    }
+
+    function togglePlay() {
+      if (index < 0) return load(Math.min(Number(recall(RESUME_KEY)) || 0, pages.length - 1), true);
+      if (player.paused) player.play().catch(() => setStatus('Playback failed. Tap play again.', true));
+      else player.pause();
+    }
+
+    function skip(seconds) {
+      if (index < 0) return;
+      player.currentTime = Math.min(Math.max(0, player.currentTime + seconds), player.duration || Infinity);
+    }
+
+    toggle.addEventListener('click', togglePlay);
+    prevBtn.addEventListener('click', () => load(index - 1, true));
+    nextBtn.addEventListener('click', () => load(index + 1, true));
+    backBtn.addEventListener('click', () => skip(-10));
+    fwdBtn.addEventListener('click', () => skip(10));
+
+    speedSelect.addEventListener('change', () => {
+      player.playbackRate = Number(speedSelect.value);
+      store(SPEED_KEY, speedSelect.value);
+    });
+
+    seek.addEventListener('input', () => {
+      scrubbing = true;
+      $('elapsed').textContent = clock(Number(seek.value));
+      $('remaining').textContent = `-${clock(Number(seek.max) - Number(seek.value))}`;
+    });
+    seek.addEventListener('change', () => {
+      player.currentTime = Number(seek.value);
+      scrubbing = false;
+    });
+
+    player.addEventListener('loadedmetadata', () => {
+      seek.max = player.duration || 0;
+      seek.disabled = !player.duration;
+      $('remaining').textContent = `-${clock(player.duration)}`;
+    });
+    player.addEventListener('timeupdate', () => {
+      if (scrubbing) return;
+      seek.value = player.currentTime;
+      $('elapsed').textContent = clock(player.currentTime);
+      $('remaining').textContent = `-${clock((player.duration || 0) - player.currentTime)}`;
+    });
+    player.addEventListener('play', () => setPlayIcon(true));
+    player.addEventListener('pause', () => setPlayIcon(false));
+    player.addEventListener('ended', () => {
+      if (index < pages.length - 1) load(index + 1, true);
+      else setPlayIcon(false);
+    });
+    player.addEventListener('error', () => setStatus('This page could not be loaded. Try again later.', true));
+
+    if ('mediaSession' in navigator) {
+      const on = (action, handler) => { try { navigator.mediaSession.setActionHandler(action, handler); } catch {} };
+      on('play', () => player.play());
+      on('pause', () => player.pause());
+      on('previoustrack', () => load(index - 1, true));
+      on('nexttrack', () => load(index + 1, true));
+      on('seekbackward', () => skip(-10));
+      on('seekforward', () => skip(10));
+      on('seekto', (d) => { if (d.seekTime != null) player.currentTime = d.seekTime; });
+    }
+
+    SPEEDS.forEach((rate) => {
+      const option = document.createElement('option');
+      option.value = String(rate);
+      option.textContent = `${rate}x${rate === 1 ? ' (normal)' : ''}`;
+      speedSelect.appendChild(option);
+    });
+    const savedSpeed = recall(SPEED_KEY);
+    speedSelect.value = SPEEDS.includes(Number(savedSpeed)) ? savedSpeed : '1';
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/shared/${encodeURIComponent(token)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Listen link not found or revoked.');
+        bookName = data.name;
+        pages = data.pages;
+        document.title = bookName;
+        $('title').textContent = bookName;
+        if (!pages.length) {
+          $('page').textContent = 'No narration is ready yet.';
+          return;
+        }
+        $('download').href = `/api/shared/${encodeURIComponent(token)}/audio-full`;
+        $('download').hidden = false;
+        $('page').textContent = `${pages.length} narrated pages`;
+        toggle.disabled = backBtn.disabled = fwdBtn.disabled = false;
+        updateNav();
+      } catch (err) {
+        $('title').textContent = 'Unavailable';
+        $('page').textContent = '';
+        setStatus(err.message, true);
+      }
+    })();
+  </script>
+</body>
+</html>

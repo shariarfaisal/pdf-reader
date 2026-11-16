@@ -148,6 +148,67 @@ export function TtsBackendControls({ remoteStatus, onRemoteStart, onRemoteStop }
   );
 }
 
+/**
+ * Compact single-button GPU toggle for the project header: status dot + label,
+ * click to start when idle and to stop when live. Full detail stays in the
+ * Inspector / Settings panels.
+ */
+export function GpuToggleButton({ remoteStatus, onRemoteStart, onRemoteStop, className = '' }) {
+  const [busy, setBusy] = useState(null);
+  const [actionError, setActionError] = useState(null);
+
+  const { isRunning, isStarting, isError, tone, pillLabel } = describeBackend(remoteStatus);
+  const canStop = isRunning || isStarting || isError;
+
+  const toggle = async () => {
+    const kind = canStop ? 'stop' : 'start';
+    setBusy(kind);
+    setActionError(null);
+    try {
+      await (canStop ? onRemoteStop?.() : onRemoteStart?.());
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const dotTone = {
+    emerald: 'bg-emerald-500',
+    amber: 'bg-amber-500',
+    rose: 'bg-rose-500',
+    slate: 'bg-slate-500'
+  }[tone];
+
+  const label = isRunning ? 'GPU live' : isStarting ? 'Starting…' : isError ? 'GPU error' : 'GPU off';
+  const title = [
+    `${pillLabel} — click to ${canStop ? 'stop' : 'start'} the GPU worker`,
+    actionError ? describeRemoteError(actionError) : null
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return (
+    <Button
+      variant={canStop ? 'secondary' : 'outline'}
+      size="sm"
+      icon={canStop ? Power : Zap}
+      isLoading={busy !== null}
+      onClick={toggle}
+      title={title}
+      aria-label={title.split('\n')[0]}
+      aria-pressed={canStop}
+      className={`gap-1.5 ${isError ? 'text-rose-600 dark:text-rose-300' : ''} ${className}`}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotTone} ${isStarting ? 'animate-pulse' : ''}`}
+        aria-hidden="true"
+      />
+      <span className="text-xs font-medium">{label}</span>
+    </Button>
+  );
+}
+
 /** Inspector sidebar section: status pill in the header, shared controls below. */
 export function TtsBackendPanel({ remoteStatus, onRemoteStart, onRemoteStop }) {
   const { isRunning, isStarting, tone, pillLabel } = describeBackend(remoteStatus);

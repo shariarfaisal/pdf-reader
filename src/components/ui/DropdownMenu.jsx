@@ -15,9 +15,11 @@ export function DropdownMenu({
   variant = 'ghost',
   size = 'sm',
   align = 'right',
+  side = 'bottom',
   title,
   disabled = false,
   className = '',
+  widthClass = 'w-64',
   showChevron = true
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -98,7 +100,7 @@ export function DropdownMenu({
         <div
           ref={menuRef}
           role="menu"
-          className={`absolute top-full mt-1.5 z-50 w-72 bg-obsidian-850/95 backdrop-blur-md border border-obsidian-700/90 rounded-xl shadow-2xl shadow-black/60 overflow-hidden py-1 animate-fade-in ${
+          className={`absolute ${side === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} z-50 ${widthClass} max-h-[min(70vh,30rem)] overflow-y-auto overflow-x-hidden scroll-slim bg-obsidian-850 border border-obsidian-700/80 rounded-xl shadow-lg py-1 animate-fade-in ${
             align === 'right' ? 'right-0' : 'left-0'
           }`}
         >
@@ -123,23 +125,23 @@ export function DropdownMenu({
                 type="button"
                 onClick={() => handleSelect(item)}
                 disabled={item.disabled}
-                className={`w-full text-left px-3 py-2 flex items-start gap-2.5 transition-colors duration-100 disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`w-full text-left px-3 py-1.5 flex items-start gap-2.5 transition-colors duration-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
                   item.danger
                     ? isHighlighted
-                      ? 'bg-rose-500/20 text-rose-200'
-                      : 'text-rose-300 hover:bg-rose-500/10'
+                      ? 'bg-rose-500/20 text-rose-600 dark:text-rose-200'
+                      : 'text-rose-600 dark:text-rose-300 hover:bg-rose-500/10'
                     : isHighlighted
-                    ? 'bg-obsidian-800 text-brand-300'
-                    : 'text-slate-200 hover:bg-obsidian-800 hover:text-white'
+                    ? 'bg-obsidian-750 text-indigo-600 dark:text-indigo-300'
+                    : 'text-slate-100 hover:bg-obsidian-750'
                 }`}
               >
                 {ItemIcon && (
                   <ItemIcon
                     className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
                       item.danger
-                        ? 'text-rose-400'
+                        ? 'text-rose-600 dark:text-rose-400'
                         : isHighlighted
-                        ? 'text-brand-400'
+                        ? 'text-indigo-600 dark:text-indigo-400'
                         : 'text-slate-400'
                     }`}
                   />
@@ -147,7 +149,7 @@ export function DropdownMenu({
                 <span className="min-w-0 flex-1">
                   <span className="block text-xs font-medium leading-snug">{item.label}</span>
                   {item.description && (
-                    <span className="block text-[11px] text-slate-400 leading-snug mt-0.5">
+                    <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
                       {item.description}
                     </span>
                   )}

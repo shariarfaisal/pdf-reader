@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Check, LayoutGrid, Loader2 } from 'lucide-react';
-import { Section } from '../ui/Section';
+import { AlertCircle, Check, ChevronDown, ChevronRight, LayoutGrid, Loader2 } from 'lucide-react';
+import { useSectionOpen } from '../ui/Section';
 import {
   PAGE_STAGES,
   pageLevel,
@@ -12,69 +12,114 @@ import {
   BUCKET_BY_KEY
 } from '../../lib/pageStages';
 
-// Tone of a page cell by how far it got: nothing → text → script → audio.
-const LEVEL_TONE = [
-  'bg-obsidian-950 border-obsidian-800 text-slate-400 hover:border-slate-600 hover:text-slate-200',
-  'bg-sky-950/30 border-sky-800/60 text-sky-200 hover:border-sky-500/70',
-  'bg-violet-950/30 border-violet-800/60 text-violet-200 hover:border-violet-500/70',
-  'bg-emerald-950/40 border-emerald-700/40 text-emerald-300 hover:border-emerald-500/70'
+// Theme-aware, high-contrast cell styles (light mode clean tints + dark mode subtle obsidian tones).
+const LEVEL_STYLES = [
+  // Level 0: Pending / Not started
+  'bg-obsidian-850 border-obsidian-700/80 text-slate-300 hover:border-obsidian-600 hover:text-slate-100 hover:bg-obsidian-750/40',
+  // Level 1: Text extracted
+  'bg-sky-500/10 border-sky-500/30 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 hover:border-sky-500/40',
+  // Level 2: Script refined
+  'bg-violet-500/10 border-violet-500/30 text-violet-700 dark:text-violet-300 hover:bg-violet-500/15 hover:border-violet-500/40',
+  // Level 3: Audio complete
+  'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/15 hover:border-emerald-500/40'
 ];
 
-const ERROR_TONE = 'bg-rose-950/40 border-rose-700/50 text-rose-300 hover:border-rose-500/70';
+const ERROR_STYLE =
+  'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300 hover:bg-rose-500/15';
 
-// Border + glow of a cell while its stage actually runs.
-const RUNNING_TONE = {
-  ocr: 'bg-sky-900/40 border-sky-400/70 text-sky-50',
-  refine: 'bg-violet-900/40 border-violet-400/70 text-violet-50',
-  audio: 'bg-emerald-900/40 border-emerald-400/70 text-emerald-50'
+const RUNNING_STYLES = {
+  ocr: 'bg-sky-500/15 border-sky-500 text-sky-800 dark:text-sky-200 ring-2 ring-sky-500/50 animate-pulse',
+  refine: 'bg-violet-500/15 border-violet-500 text-violet-800 dark:text-violet-200 ring-2 ring-violet-500/50 animate-pulse',
+  audio: 'bg-emerald-500/15 border-emerald-500 text-emerald-800 dark:text-emerald-200 ring-2 ring-emerald-500/50 animate-pulse'
 };
 
-const BUCKET_TONE = {
-  pending: 'text-slate-200 border-slate-500/60 bg-slate-500/10',
-  text: 'text-sky-300 border-sky-500/50 bg-sky-500/10',
-  script: 'text-violet-300 border-violet-500/50 bg-violet-500/10',
-  audio: 'text-emerald-300 border-emerald-500/50 bg-emerald-500/10',
-  error: 'text-rose-300 border-rose-500/50 bg-rose-500/10'
+const BUCKET_ACTIVE_STYLES = {
+  all: 'bg-indigo-600 text-white dark:bg-indigo-500 dark:text-white shadow-2xs font-semibold border border-indigo-600 dark:border-indigo-500',
+  pending: 'bg-slate-600 text-white dark:bg-slate-600 dark:text-white shadow-2xs font-semibold border border-slate-600',
+  text: 'bg-sky-600 text-white dark:bg-sky-500 dark:text-white shadow-2xs font-semibold border border-sky-600 dark:border-sky-500',
+  script: 'bg-violet-600 text-white dark:bg-violet-500 dark:text-white shadow-2xs font-semibold border border-violet-600 dark:border-violet-500',
+  audio: 'bg-emerald-600 text-white dark:bg-emerald-500 dark:text-white shadow-2xs font-semibold border border-emerald-600 dark:border-emerald-500',
+  error: 'bg-rose-600 text-white dark:bg-rose-500 dark:text-white shadow-2xs font-semibold border border-rose-600 dark:border-rose-500'
 };
 
-/** Three micro bars: filled = cached, pulsing = running, empty = pending. */
-function StageBars({ done, runningStage }) {
+// Cells are a fixed 36px + 6px gap in a 6 column grid, so the grid can be
+// windowed by rows: a 300 page book renders ~60 cells instead of 300.
+const GRID_COLS = 6;
+const GRID_CELL_HEIGHT = 36;
+const GRID_GAP = 6;
+const GRID_ROW_HEIGHT = GRID_CELL_HEIGHT + GRID_GAP;
+
+/** Refined micro progress indicator at the bottom of a cell. */
+function MicroStageBars({ done, isRunning, runningStage }) {
   return (
-    <span className="flex w-[62%] items-center gap-[2px]" aria-hidden="true">
+    <span className="flex w-[60%] items-center gap-[2px] mt-0.5" aria-hidden="true">
       {PAGE_STAGES.map((stage) => {
-        const filled = done[stage.key];
-        const running = runningStage === stage.key;
-        return (
-          <span
-            key={stage.key}
-            className={`h-[3px] flex-1 rounded-full ${
-              filled
-                ? stage.bar
-                : running
-                  ? `${stage.bar} opacity-50 animate-pulse motion-reduce:animate-none`
-                  : 'bg-obsidian-700/80'
-            }`}
-          />
-        );
+        const isDone = done[stage.key];
+        const isCurrent = isRunning && runningStage === stage.key;
+
+        let dotColor = 'bg-obsidian-700/80';
+        if (isDone) {
+          if (stage.key === 'ocr') dotColor = 'bg-sky-500 dark:bg-sky-400';
+          else if (stage.key === 'refine') dotColor = 'bg-violet-500 dark:bg-violet-400';
+          else if (stage.key === 'audio') dotColor = 'bg-emerald-500 dark:bg-emerald-400';
+        } else if (isCurrent) {
+          dotColor = 'bg-indigo-500 animate-pulse';
+        }
+
+        return <span key={stage.key} className={`h-[2px] flex-1 rounded-full ${dotColor}`} />;
       })}
     </span>
   );
 }
 
 /**
- * Page grid: every cell carries its own four-stage progress (nothing / text /
- * script / audio) and only spins while a stage is genuinely running.
+ * Modern, theme-harmonized Page grid with compact filter chips,
+ * clear high-contrast states, quick page jumping, and persistent collapsible card layout.
  */
 export function PageGrid({ pages, activePageNumber, onSelectPage, activeRuns = null, stages = {} }) {
+  const [open, toggleOpen] = useSectionOpen('inspector-pages', true);
   const [filterKey, setFilterKey] = useState('all');
+  const [jumpPageInput, setJumpPageInput] = useState('');
+  const [gridViewport, setGridViewport] = useState({ scrollTop: 0, height: 0 });
   const gridRef = useRef(null);
+
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!open || !grid) return;
+
+    const measure = () =>
+      setGridViewport((prev) => {
+        const next = { scrollTop: grid.scrollTop, height: grid.clientHeight };
+        return prev.scrollTop === next.scrollTop && prev.height === next.height ? prev : next;
+      });
+
+    measure();
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measure();
+      });
+    };
+    grid.addEventListener('scroll', onScroll, { passive: true });
+    let observer = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(measure);
+      observer.observe(grid);
+    }
+    return () => {
+      grid.removeEventListener('scroll', onScroll);
+      if (frame) cancelAnimationFrame(frame);
+      if (observer) observer.disconnect();
+    };
+  }, [open]);
 
   const buckets = [
     {
       key: 'all',
       label: 'All',
       count: pages.length,
-      tone: 'text-slate-200 border-slate-500/60 bg-slate-500/10',
       match: () => true
     }
   ].concat(
@@ -84,131 +129,240 @@ export function PageGrid({ pages, activePageNumber, onSelectPage, activeRuns = n
         key,
         label: bucket.label,
         count: pages.filter((page) => pageBucket(page) === key).length,
-        tone: BUCKET_TONE[key],
         match: (page) => pageBucket(page) === key
       };
     })
   );
 
-  // A filter that has emptied out (e.g. the last error was fixed) falls back to All.
-  const chosen = buckets.find((bucket) => bucket.key === filterKey);
+  // A filter that has emptied out falls back to All.
+  const chosen = buckets.find((b) => b.key === filterKey);
   const filter = chosen && (chosen.count > 0 || chosen.key === 'all') ? chosen : buckets[0];
   const visible = pages.filter(filter.match);
   const runningCount = pages.filter((page) => isPageRunning(page, activeRuns, stages)).length;
+  const audioCount = buckets.find((b) => b.key === 'audio')?.count || 0;
+  const allComplete = pages.length > 0 && audioCount === pages.length;
 
-  // Keep the current page visible inside the grid without scrolling ancestors.
+  // Filter chips to display: always show 'all', plus any stages that actually have pages.
+  const activeChips = buckets.filter((b) => b.key === 'all' || b.count > 0);
+
+  // Keep the current page visible inside the grid without scrolling ancestors,
+  // computed from the cell index so it works while that cell is unmounted.
   useEffect(() => {
     const grid = gridRef.current;
-    const cell = grid?.querySelector(`[data-page="${activePageNumber}"]`);
-    if (!grid || !cell) return;
-    const top = cell.offsetTop;
-    const bottom = top + cell.offsetHeight;
+    if (!grid) return;
+    const index = visible.findIndex((page) => page.page_number === activePageNumber);
+    if (index < 0) return;
+    const top = Math.floor(index / GRID_COLS) * GRID_ROW_HEIGHT;
+    const bottom = top + GRID_CELL_HEIGHT;
     if (top < grid.scrollTop) grid.scrollTop = Math.max(0, top - 4);
-    else if (bottom > grid.scrollTop + grid.clientHeight) grid.scrollTop = bottom - grid.clientHeight + 4;
-  }, [activePageNumber, filter.key]);
+    else if (bottom > grid.scrollTop + grid.clientHeight) {
+      grid.scrollTop = bottom - grid.clientHeight + 4;
+    }
+  }, [activePageNumber, filter.key, open, visible.length]);
+
+  // Windowed slice of the grid.
+  const totalRows = Math.ceil(visible.length / GRID_COLS);
+  const totalGridHeight = totalRows > 0 ? totalRows * GRID_ROW_HEIGHT - GRID_GAP : 0;
+  const rowsInView = Math.max(1, Math.ceil((gridViewport.height || 176) / GRID_ROW_HEIGHT));
+  const firstRow = Math.max(
+    0,
+    Math.min(Math.max(0, totalRows - 1), Math.floor(gridViewport.scrollTop / GRID_ROW_HEIGHT) - 2)
+  );
+  const gridStartIndex = firstRow * GRID_COLS;
+  const gridEndIndex = Math.min(
+    visible.length,
+    gridStartIndex + (rowsInView + 4) * GRID_COLS
+  );
+  const gridPages = visible.slice(gridStartIndex, gridEndIndex);
+  const gridOffsetTop = firstRow * GRID_ROW_HEIGHT;
+
+  const handleJumpSubmit = (e) => {
+    e.preventDefault();
+    const num = parseInt(jumpPageInput.trim(), 10);
+    if (!Number.isNaN(num) && num >= 1 && num <= pages.length) {
+      onSelectPage(num - 1);
+      setJumpPageInput('');
+    }
+  };
 
   return (
-    <Section
-      id="inspector-pages"
-      icon={LayoutGrid}
-      iconClassName="text-slate-300"
-      title="Pages"
-      meta={`${pages.length} pages`}
-      bodyClassName="px-3 pt-1 pb-3"
-    >
-      <div className="space-y-2.5">
-        <div role="group" aria-label="Filter pages by completed stage" className="grid grid-cols-3 gap-1.5">
-          {buckets.map((bucket) => {
-            const isSelected = bucket.key === filter.key;
-            const empty = bucket.count === 0;
-            return (
-              <button
-                key={bucket.key}
-                type="button"
-                aria-pressed={isSelected}
-                disabled={empty && bucket.key !== 'all'}
-                onClick={() => setFilterKey(bucket.key)}
-                className={`flex items-center justify-center gap-1.5 rounded-lg border py-1 transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 disabled:cursor-default disabled:opacity-40 ${
-                  isSelected
-                    ? bucket.tone
-                    : 'border-obsidian-800 bg-obsidian-950/60 text-slate-400 hover:border-obsidian-600'
-                }`}
-              >
-                <span className="font-mono text-[12px] font-semibold leading-none tabular-nums">{bucket.count}</span>
-                <span className="text-[10px] leading-none uppercase tracking-wide">{bucket.label}</span>
-              </button>
-            );
-          })}
-        </div>
+    <div className="rounded-xl border border-obsidian-700/80 bg-obsidian-900/40 overflow-hidden transition-colors">
+      {/* Collapsible card header matching Project Voices and Diagnostics */}
+      <button
+        type="button"
+        onClick={toggleOpen}
+        aria-expanded={open}
+        aria-controls="inspector-pages-content"
+        className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-semibold text-slate-200 hover:bg-obsidian-750/50 transition-colors cursor-pointer select-none"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <LayoutGrid className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 flex-shrink-0" />
+          <span className="truncate">Pages</span>
+          <span className="font-mono text-[11px] font-normal text-slate-400">
+            ({pages.length})
+          </span>
+        </span>
 
-        <div
-          ref={gridRef}
-          className="relative grid grid-cols-6 gap-1.5 max-h-[10.5rem] overflow-y-auto pr-1 overscroll-contain"
-        >
-          {visible.length === 0 ? (
-            <p className="col-span-6 py-6 text-center text-[11px] text-slate-500">No pages in this stage.</p>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {runningCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              {runningCount} running
+            </span>
+          ) : allComplete ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+              <Check className="w-2.5 h-2.5" />
+              All ready
+            </span>
+          ) : null}
+
+          {open ? (
+            <ChevronDown className="w-4 h-4 text-slate-400" />
           ) : (
-            visible.map((page) => {
-              const isActive = page.page_number === activePageNumber;
-              const done = pageStages(page);
-              const level = pageLevel(page);
-              const running = isPageRunning(page, activeRuns, stages);
-              const runningStage = running ? runningStageFor(page, activeRuns, stages) : null;
-              const isError = page.status === 'error';
-              const tone = isError
-                ? ERROR_TONE
-                : running
-                  ? RUNNING_TONE[runningStage] || LEVEL_TONE[level]
-                  : LEVEL_TONE[level];
-              const stateLabel = describePage(page, activeRuns, stages);
-              const tooltip = `Page ${page.page_number + 1} · ${stateLabel}${
-                isError && page.error_message ? ` · ${page.error_message}` : ''
-              }`;
-
-              return (
-                <button
-                  key={page.page_number}
-                  type="button"
-                  data-page={page.page_number}
-                  aria-current={isActive ? 'page' : undefined}
-                  aria-label={`Page ${page.page_number + 1}, ${stateLabel}`}
-                  title={tooltip}
-                  onClick={() => onSelectPage(page.page_number)}
-                  className={`relative flex h-10 flex-col items-center justify-center gap-1 rounded-md border px-1 text-[11px] font-mono tabular-nums transition-colors motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 ${tone} ${
-                    isActive ? 'ring-2 ring-brand-400 font-bold' : ''
-                  }`}
-                >
-                  <span className="flex items-center gap-0.5 leading-none">
-                    {page.page_number + 1}
-                    {running ? (
-                      <Loader2 className="w-2.5 h-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    ) : isError ? (
-                      <AlertCircle className="w-2.5 h-2.5 text-rose-400" aria-hidden="true" />
-                    ) : done.audio ? (
-                      <Check className="w-2.5 h-2.5 text-emerald-400/80" aria-hidden="true" />
-                    ) : null}
-                  </span>
-                  <StageBars done={done} runningStage={runningStage} />
-                </button>
-              );
-            })
+            <ChevronRight className="w-4 h-4 text-slate-400" />
           )}
         </div>
+      </button>
 
-        <div className="flex items-center justify-between gap-2">
-          <ul className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] uppercase tracking-wide text-slate-500">
-            {PAGE_STAGES.map((stage) => (
-              <li key={stage.key} className="flex items-center gap-1">
-                <span className={`h-[3px] w-3 rounded-full ${stage.bar}`} aria-hidden="true" />
-                {stage.label}
-              </li>
-            ))}
-          </ul>
-          <span className={`text-[10px] ${runningCount > 0 ? 'text-brand-300' : 'text-slate-500'}`}>
-            {runningCount > 0 ? `${runningCount} running` : 'Click to jump'}
-          </span>
+      {open && (
+        <div id="inspector-pages-content" className="p-3 border-t border-obsidian-700/60 space-y-2.5 bg-obsidian-850">
+          {/* Filter chips & quick jump */}
+          <div className="flex items-center justify-between gap-1.5 flex-wrap">
+            <div role="group" aria-label="Filter pages by completed stage" className="flex items-center gap-1 flex-wrap">
+              {activeChips.map((bucket) => {
+                const isSelected = bucket.key === filter.key;
+                return (
+                  <button
+                    key={bucket.key}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => setFilterKey(bucket.key)}
+                    className={`inline-flex items-center gap-1 px-2.5 h-7 rounded-full text-[11px] transition-all motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 cursor-pointer ${
+                      isSelected
+                        ? BUCKET_ACTIVE_STYLES[bucket.key] || BUCKET_ACTIVE_STYLES.all
+                        : 'bg-obsidian-750/80 text-slate-400 hover:text-slate-200 hover:bg-obsidian-700 border border-obsidian-700/60'
+                    }`}
+                  >
+                    <span>{bucket.label}</span>
+                    <span className="font-mono text-[10px] opacity-80 tabular-nums">{bucket.count}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Quick jump to page input */}
+            {pages.length > 6 && (
+              <form onSubmit={handleJumpSubmit} className="flex items-center gap-1 shrink-0 ml-auto">
+                <label htmlFor="jump-page-input" className="text-[10px] text-slate-400 font-medium">
+                  Go:
+                </label>
+                <input
+                  id="jump-page-input"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder={`1-${pages.length}`}
+                  value={jumpPageInput}
+                  onChange={(e) => setJumpPageInput(e.target.value)}
+                  className="w-16 h-7 px-1.5 text-center font-mono text-[11px] rounded-md border border-obsidian-700 bg-obsidian-900 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                />
+              </form>
+            )}
+          </div>
+
+          {/* Page cells grid */}
+          <div
+            ref={gridRef}
+            className="relative max-h-[16.5rem] overflow-y-auto p-0.5 pr-1 overscroll-contain scroll-slim [overflow-anchor:none]"
+          >
+            {visible.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-400">No pages in this stage.</p>
+            ) : (
+              <div className="relative w-full" style={{ height: totalGridHeight }}>
+                <div
+                  className="grid grid-cols-6 gap-1.5"
+                  style={{ transform: `translateY(${gridOffsetTop}px)` }}
+                >
+                  {gridPages.map((page) => {
+                    const isActive = page.page_number === activePageNumber;
+                    const done = pageStages(page);
+                    const level = pageLevel(page);
+                    const running = isPageRunning(page, activeRuns, stages);
+                    const runningStage = running ? runningStageFor(page, activeRuns, stages) : null;
+                    const isError = page.status === 'error';
+
+                    const tone = isError
+                      ? ERROR_STYLE
+                      : running
+                      ? RUNNING_STYLES[runningStage] || LEVEL_STYLES[level]
+                      : LEVEL_STYLES[level];
+
+                    const stateLabel = describePage(page, activeRuns, stages);
+                    const tooltip = `Page ${page.page_number + 1} · ${stateLabel}${
+                      isError && page.error_message ? ` · ${page.error_message}` : ''
+                    }`;
+
+                    return (
+                      <button
+                        key={page.page_number}
+                        type="button"
+                        data-page={page.page_number}
+                        aria-current={isActive ? 'page' : undefined}
+                        aria-label={`Page ${page.page_number + 1}, ${stateLabel}`}
+                        title={tooltip}
+                        onClick={() => onSelectPage(page.page_number)}
+                        className={`relative flex h-9 flex-col items-center justify-center rounded-lg border px-1 text-[11px] font-mono tabular-nums transition-all motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 cursor-pointer ${tone} ${
+                          isActive
+                            ? 'ring-2 ring-indigo-600 dark:ring-indigo-400 ring-offset-1 ring-offset-obsidian-850 font-bold z-10 shadow-xs'
+                            : ''
+                        }`}
+                      >
+                        <span className="flex items-center gap-0.5 leading-none font-medium">
+                          {page.page_number + 1}
+                          {running ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+                          ) : isError ? (
+                            <AlertCircle className="w-2.5 h-2.5 text-rose-500 dark:text-rose-400" aria-hidden="true" />
+                          ) : done.audio ? (
+                            <Check className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400 stroke-[2.5]" aria-hidden="true" />
+                          ) : null}
+                        </span>
+                        <MicroStageBars done={done} isRunning={running} runningStage={runningStage} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Clean Legend & Action Hint */}
+          <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-obsidian-700/60 text-[10px]">
+            <div className="flex items-center gap-2.5 text-slate-400">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-500 dark:bg-sky-400" aria-hidden="true" />
+                Text
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" aria-hidden="true" />
+                Script
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" aria-hidden="true" />
+                Audio
+              </span>
+            </div>
+
+            <span
+              className={`text-[10px] ${
+                runningCount > 0 ? 'text-indigo-600 dark:text-indigo-400 font-medium' : 'text-slate-400'
+              }`}
+            >
+              {runningCount > 0 ? `${runningCount} running` : 'Click to jump'}
+            </span>
+          </div>
         </div>
-      </div>
-    </Section>
+      )}
+    </div>
   );
 }
+

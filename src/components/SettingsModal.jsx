@@ -39,6 +39,7 @@ import {
   HardDrive
 } from 'lucide-react';
 import { DEFAULT_REFINER_PROMPT } from '../lib/refinerPrompt';
+import { changedSettings } from '../lib/settingsDiff';
 import { navigate, USAGE_PATH, VOICES_PATH, MODELS_PATH } from '../lib/router';
 
 /** Field keys owned by each section — drives the per-section "unsaved" dot. */
@@ -244,7 +245,7 @@ export function SettingsModal({
     e.preventDefault();
     setIsSaving(true);
     try {
-      await onSave(formData);
+      await onSave(changedSettings(formData, baseline));
       setBaseline(formData);
       setSaveSuccess(true);
       notifyVoicesChanged();
@@ -1139,7 +1140,7 @@ export function SettingsModal({
         {/* Section body */}
         <div className="flex-1 min-w-0 overflow-y-auto scroll-slim p-4 sm:p-5 space-y-4">
           <div>
-            <h2 className="text-[15px] font-semibold text-white">{current.title}</h2>
+            <h2 className="text-[15px] font-semibold text-slate-100">{current.title}</h2>
             <p className="text-[12px] text-slate-500 mt-0.5">{current.description}</p>
           </div>
           {renderSection()}

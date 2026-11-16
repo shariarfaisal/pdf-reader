@@ -11,9 +11,10 @@ import { useEffect, useState } from 'react';
  */
 
 export const LIBRARY_PATH = '/';
-export const USAGE_PATH = '/usage';
-export const VOICES_PATH = '/voices';
-export const MODELS_PATH = '/models';
+export const USAGE_PATH = '/settings?tab=usage';
+export const VOICES_PATH = '/settings?tab=voices';
+export const MODELS_PATH = '/settings?tab=models';
+export const SETTINGS_PATH = '/settings';
 
 export const projectPath = (projectId, pageNumber) => {
   const base = `/projects/${encodeURIComponent(projectId)}`;
@@ -21,16 +22,20 @@ export const projectPath = (projectId, pageNumber) => {
   return Number.isInteger(pageNumber) ? `${base}/pages/${pageNumber + 1}` : base;
 };
 
-export function matchRoute(pathname = window.location.pathname) {
+export function matchRoute(pathname = window.location.pathname, search = window.location.search) {
   const clean = `/${pathname.replace(/^\/+|\/+$/g, '')}`;
+  const searchParams = new URLSearchParams(search);
+  const queryTab = searchParams.get('tab');
 
   if (clean === '/') return { name: 'library' };
 
-  if (clean === '/usage') return { name: 'usage' };
+  if (clean === '/usage') return { name: 'settings', tab: 'usage' };
 
-  if (clean === '/voices') return { name: 'voices' };
+  if (clean === '/voices') return { name: 'settings', tab: 'voices' };
 
-  if (clean === '/models') return { name: 'models' };
+  if (clean === '/models') return { name: 'settings', tab: 'models' };
+
+  if (clean === '/settings') return { name: 'settings', tab: queryTab || 'general' };
 
   const projectMatch = clean.match(/^\/projects\/([A-Za-z0-9_-]+)(?:\/pages\/(\d+))?$/);
   if (projectMatch) {

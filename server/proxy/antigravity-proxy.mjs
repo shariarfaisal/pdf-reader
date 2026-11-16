@@ -294,6 +294,9 @@ function convertOpenAiToGemini(openaiBody) {
 function convertGeminiToOpenAi(geminiResponse, model) {
   const candidate = geminiResponse.candidates?.[0];
   const text = candidate?.content?.parts?.map(p => p.text).join('') || '';
+  // Cloud Code Assist reports implicit-cache reads as cachedContentTokenCount.
+  // Dropping it forced every caller to log cached_tokens = 0 even on a hit.
+  const cachedTokens = geminiResponse.usageMetadata?.cachedContentTokenCount || 0;
 
   return {
     id: 'chatcmpl-' + crypto.randomUUID(),
@@ -313,7 +316,8 @@ function convertGeminiToOpenAi(geminiResponse, model) {
     usage: {
       prompt_tokens: geminiResponse.usageMetadata?.promptTokenCount || 0,
       completion_tokens: geminiResponse.usageMetadata?.candidatesTokenCount || 0,
-      total_tokens: geminiResponse.usageMetadata?.totalTokenCount || 0
+      total_tokens: geminiResponse.usageMetadata?.totalTokenCount || 0,
+      prompt_tokens_details: { cached_tokens: cachedTokens }
     }
   };
 }

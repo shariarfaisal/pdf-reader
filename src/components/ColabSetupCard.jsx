@@ -305,7 +305,7 @@ export function ColabSetupCard({ onSetupChange }) {
             <Sparkles className="w-3.5 h-3.5 text-brand-400 flex-shrink-0" />
             <span>
               Compute Balance:{' '}
-              <strong className="font-mono text-white">
+              <strong className="font-mono text-slate-100">
                 {usage.balance !== null ? `${usage.balance.toFixed(2)} CU` : 'Available'}
               </strong>
             </span>
@@ -415,7 +415,7 @@ export function ColabSetupCard({ onSetupChange }) {
         <div className="rounded-xl border border-brand-500/25 bg-obsidian-900/90 p-3.5 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <h4 className="text-xs font-semibold text-white">
+              <h4 className="text-xs font-semibold text-slate-100">
                 Authorize Google Colab Access (Copy &amp; Paste OAuth Flow)
               </h4>
               <p className="text-[11px] text-slate-400 mt-0.5">
@@ -482,7 +482,7 @@ export function ColabSetupCard({ onSetupChange }) {
                 2
               </span>
               <span>
-                Sign in with your Google account and click <strong className="text-white">Allow</strong>. Google will display an authorization code on screen.
+                Sign in with your Google account and click <strong className="text-slate-100">Allow</strong>. Google will display an authorization code on screen.
               </span>
             </li>
 

@@ -16,10 +16,15 @@ data/*.db-wal
 data/*.log
 data/app.db
 data/voices/
+data/drive/
 
-# Keep sample fallback audio if present, but ignore other large generated checkpoints
+# Personal voice samples and clone prompts (keep private; add your own, see README)
+data/custom-audio.m4a
+data/custom-voice-ref.wav
+data/custom-voice-prompt.pt
+
+# Large generated checkpoints
 *.pt
-!data/custom-voice-prompt.pt
 
 # Python artifacts
 __pycache__/

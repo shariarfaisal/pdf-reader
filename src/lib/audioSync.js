@@ -1,18 +1,23 @@
 /**
- * Narration sync: map playback time to the paragraph and sentence being spoken.
+ * Narration sync: map playback time to the sentence being spoken.
  *
- * The TTS engine decodes one sentence chunk at a time, so it reports the exact
- * start/end of every spoken chunk (`pages.audio_timings`). Matching those marks
- * to the rendered paragraphs is plain text matching — no model, no guessing from
- * playback progress (progress says nothing: paragraphs are never equal length).
+ * The TTS engine decodes one sentence chunk at a time and reports the exact
+ * start/end of each chunk (`pages.audio_timings`). Those chunks are matched to
+ * the rendered text, giving time "anchors" at known text offsets. Every sentence
+ * in between is timed by interpolating between the nearest anchors, so a chunk
+ * the matcher could not find (the synthesizer expands abbreviations and
+ * normalizes quotes) never leaves the highlight stuck or skipping text.
  *
  * Matching is done on a "compact" projection of the text (letters/digits/marks
- * only, lowercased, no spaces or punctuation) because the synthesizer sanitizes
- * its input — quotes, dashes and page artifacts differ between the stored script
- * and the spoken chunk. Compact offsets map straight back to raw text offsets.
+ * only, lowercased, no spaces or punctuation). Compact offsets map straight back
+ * to raw text offsets for rendering.
  */
 
 const WORD_CHAR = /[\p{L}\p{N}\p{M}]/u;
+// Latin, Bangla danda, Arabic question mark and full stop.
+const SENTENCE_END = /[.!?।॥؟۔]/;
+// Characters of a chunk's head/tail used to anchor a chunk that does not match whole.
+const ANCHOR_CHARS = 16;
 
 /** Letters/digits/combining marks only, lowercased, with a raw-index map. */
 function compactIndex(text) {
@@ -47,55 +52,114 @@ export function parseTimings(page) {
   return clean.length ? clean : null;
 }
 
+/** Sentence spans of one paragraph as compact offsets: [{ from, to }]. */
+function sentenceSpans(paragraph) {
+  const { text, map } = compactIndex(paragraph);
+  const spans = [];
+  let from = 0;
+  let seen = 0; // compact characters at or before the current raw index
+  for (let i = 0; i < paragraph.length; i += 1) {
+    if (seen < map.length && map[seen] === i) seen += 1;
+    if (SENTENCE_END.test(paragraph[i]) && seen > from) {
+      spans.push({ from, to: seen });
+      from = seen;
+    }
+  }
+  if (text.length > from) spans.push({ from, to: text.length });
+  return spans;
+}
+
 /**
- * Join sentence marks to paragraph indexes.
- * Returns [{ start, end, paragraph, from, to }] with from/to as compact
- * character offsets, or null when nothing could be matched.
+ * Locate one chunk in the document text, searching from `from`.
+ * Returns { start, end } where `end` is null when only the head was found.
+ */
+function locateChunk(doc, needle, from) {
+  const whole = doc.indexOf(needle, from);
+  if (whole !== -1) return { start: whole, end: whole + needle.length };
+  if (needle.length < ANCHOR_CHARS * 2) return null;
+
+  const start = doc.indexOf(needle.slice(0, ANCHOR_CHARS), from);
+  if (start === -1) return null;
+  const tail = needle.slice(-ANCHOR_CHARS);
+  const tailAt = doc.indexOf(tail, start + ANCHOR_CHARS);
+  const plausible = tailAt !== -1 && tailAt + ANCHOR_CHARS <= start + needle.length * 2;
+  return { start, end: plausible ? tailAt + ANCHOR_CHARS : null };
+}
+
+/** Time at a document offset, interpolated between the surrounding anchors. */
+function timeAt(anchors, offset) {
+  // Last anchor at or before the offset. Ties resolve to the later anchor, so a
+  // sentence that starts where a chunk ends picks up the pause that follows it.
+  let lo = 0;
+  let hi = anchors.length - 1;
+  let i = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (anchors[mid].offset <= offset) {
+      i = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const a = anchors[i];
+  const b = anchors[i + 1];
+  if (!b || b.offset === a.offset) return a.time;
+  return a.time + ((offset - a.offset) / (b.offset - a.offset)) * (b.time - a.time);
+}
+
+/**
+ * Join sentence marks to paragraph sentences.
+ * Returns [{ start, end, paragraph, from, to }] in playback order, with from/to
+ * as compact character offsets within the paragraph, or null when there is
+ * nothing to sync.
  */
 export function buildSyncMap(paragraphs, marks) {
   if (!marks?.length || !paragraphs?.length) return null;
 
-  const compactParas = paragraphs.map((text) => compactIndex(text || ''));
-  const spans = [];
-  let docCursor = 0;
-  compactParas.forEach((item, index) => {
-    spans.push({ index, start: docCursor, end: docCursor + item.text.length });
-    docCursor += item.text.length;
-  });
-  const doc = compactParas.map((item) => item.text).join('');
+  const compactParas = paragraphs.map((text) => compactIndex(text || '').text);
+  const paraStarts = [];
+  let doc = '';
+  for (const text of compactParas) {
+    paraStarts.push(doc.length);
+    doc += text;
+  }
 
+  // Anchors pin text offsets to audio times. Chunks are in reading order, so
+  // each search starts where the previous match ended.
+  const anchors = [{ offset: 0, time: 0 }];
   let searchFrom = 0;
-  const entries = [];
   for (const mark of marks) {
     const needle = compactIndex(String(mark.text || '')).text;
     if (!needle) continue;
-    let at = doc.indexOf(needle, searchFrom);
-    if (at === -1) at = doc.indexOf(needle);
-    if (at === -1) continue;
-    searchFrom = at + needle.length;
-
-    // The chunker groups sentences up to a character budget, ignoring paragraph
-    // breaks, so one spoken chunk often spans several paragraphs. Split its time
-    // across them by character count so the highlight advances mid-chunk.
-    const chunkStart = at;
-    const chunkEnd = at + needle.length;
-    const chunkLength = chunkEnd - chunkStart;
-    const markSpan = Math.max(0.001, mark.end - mark.start);
-    for (const piece of spans) {
-      if (piece.end <= chunkStart || piece.start >= chunkEnd) continue;
-      const localStart = Math.max(piece.start, chunkStart);
-      const localEnd = Math.min(piece.end, chunkEnd);
-      const fractionStart = (localStart - chunkStart) / chunkLength;
-      const fractionEnd = (localEnd - chunkStart) / chunkLength;
-      entries.push({
-        start: Math.round((mark.start + markSpan * fractionStart) * 1000) / 1000,
-        end: Math.round((mark.start + markSpan * fractionEnd) * 1000) / 1000,
-        paragraph: piece.index,
-        from: localStart - piece.start,
-        to: localEnd - piece.start
-      });
+    const found = locateChunk(doc, needle, searchFrom);
+    if (!found) continue;
+    anchors.push({ offset: found.start, time: mark.start });
+    if (found.end !== null) {
+      anchors.push({ offset: found.end, time: mark.end });
+      searchFrom = found.end;
+    } else {
+      searchFrom = found.start + ANCHOR_CHARS;
     }
   }
+  anchors.push({ offset: doc.length, time: marks[marks.length - 1].end });
+
+  const entries = [];
+  paragraphs.forEach((text, paragraph) => {
+    const base = paraStarts[paragraph];
+    for (const { from, to } of sentenceSpans(text || '')) {
+      const start = timeAt(anchors, base + from);
+      const end = timeAt(anchors, base + to);
+      if (end <= start) continue;
+      entries.push({
+        start: Math.round(start * 1000) / 1000,
+        end: Math.round(end * 1000) / 1000,
+        paragraph,
+        from,
+        to
+      });
+    }
+  });
   return entries.length ? entries : null;
 }
 

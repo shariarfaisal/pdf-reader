@@ -142,6 +142,17 @@ if (!hasPageColumn('text_rules_stamp')) {
 if (!hasPageColumn('audio_timings')) {
   db.exec(`ALTER TABLE pages ADD COLUMN audio_timings TEXT`);
 }
+// Google Drive copy of the page's narration audio (NULL = not backed up).
+if (!hasPageColumn('audio_drive_id')) {
+  db.exec(`ALTER TABLE pages ADD COLUMN audio_drive_id TEXT`);
+}
+
+// Listen-link token (NULL = sharing off). Grants read-only audio access only.
+const projectColumns = db.prepare(`PRAGMA table_info(projects)`).all();
+if (!projectColumns.some((c) => c.name === 'share_token')) {
+  db.exec(`ALTER TABLE projects ADD COLUMN share_token TEXT`);
+}
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_share_token ON projects(share_token)`);
 
 db.exec(`
   UPDATE pages SET source_page = page_number WHERE source_page IS NULL AND page_type = 'pdf';
@@ -187,7 +198,14 @@ export const DEFAULT_SETTINGS = {
   custom_models_json: '[]', // user-registered custom models
   pipeline_stage_target: 'all', // 'all' | 'ocr' | 'refine' | 'audio'
   // Treat loopback endpoints (local Antigravity proxy, self-hosted OCR) as free
-  usage_free_local: '1'
+  usage_free_local: '1',
+  // Google Drive audio storage: upload each synthesized page to Drive ('1' | '0')
+  drive_backup_audio: '0',
+  // After a page uploads and its Drive copy checks out (same size), delete the local file ('1' | '0')
+  drive_free_after_upload: '0',
+  // Local audio cache cap in MB; '0' keeps every local file. Above the cap, the
+  // least recently used files that have a Drive copy are removed locally.
+  drive_cache_mb: '0'
 };
 
 const insertSettingStmt = db.prepare(`
@@ -289,12 +307,26 @@ export const queries = {
     return db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id);
   },
 
+  getProjectByShareToken: (token) => {
+    return db.prepare(`SELECT * FROM projects WHERE share_token = ?`).get(token);
+  },
+
+  setProjectShareToken: (id, token) => {
+    db.prepare(`UPDATE projects SET share_token = ? WHERE id = ?`).run(token, id);
+  },
+
   createProject: ({ id, name, pdfPath, pageCount }) => {
     const now = Date.now();
     db.prepare(`
       INSERT INTO projects (id, name, pdf_path, page_count, active_page, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, 0, 'idle', ?, ?)
     `).run(id, name, pdfPath, pageCount, now, now);
+    return queries.getProjectById(id);
+  },
+
+  /** Rename only — deliberately leaves updated_at alone so library sort order stays put. */
+  updateProjectName: (id, name) => {
+    db.prepare(`UPDATE projects SET name = ? WHERE id = ?`).run(name, id);
     return queries.getProjectById(id);
   },
 
@@ -323,6 +355,15 @@ export const queries = {
 
   getPage: (projectId, pageNumber) => {
     return db.prepare(`SELECT * FROM pages WHERE project_id = ? AND page_number = ?`).get(projectId, pageNumber);
+  },
+
+  /** Pages that have a local audio path (local file may be evicted; see audioStore). */
+  listPagesWithAudioPath: () => {
+    return db.prepare(`SELECT id, project_id, page_number, audio_path, audio_drive_id FROM pages WHERE audio_path IS NOT NULL`).all();
+  },
+
+  setPageAudioDriveId: (projectId, pageNumber, driveId) => {
+    db.prepare(`UPDATE pages SET audio_drive_id = ? WHERE project_id = ? AND page_number = ?`).run(driveId, projectId, pageNumber);
   },
 
   /**
@@ -771,6 +812,7 @@ export const queries = {
         COUNT(*) AS calls,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cached_tokens), 0) AS cachedTokens,
         COALESCE(SUM(cost_usd), 0) AS costUsd,
         COALESCE(SUM(list_cost_usd), 0) AS listCostUsd,
         COALESCE(AVG(latency_ms), 0) AS avgLatencyMs
@@ -783,6 +825,7 @@ export const queries = {
         COUNT(*) AS calls,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cached_tokens), 0) AS cachedTokens,
         COALESCE(SUM(cost_usd), 0) AS costUsd,
         COALESCE(SUM(list_cost_usd), 0) AS listCostUsd,
         COALESCE(AVG(latency_ms), 0) AS avgLatencyMs
@@ -796,6 +839,7 @@ export const queries = {
         COUNT(*) AS calls,
         COALESCE(SUM(c.input_tokens), 0) AS inputTokens,
         COALESCE(SUM(c.output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(c.cached_tokens), 0) AS cachedTokens,
         COALESCE(SUM(c.cost_usd), 0) AS costUsd,
         COALESCE(SUM(c.list_cost_usd), 0) AS listCostUsd
       FROM api_calls c

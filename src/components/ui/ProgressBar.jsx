@@ -1,6 +1,13 @@
 import React from 'react';
 
-export function ProgressBar({ value = 0, max = 100, label, showPercent = true, className = '', height = 'h-2' }) {
+export function ProgressBar({
+  value = 0,
+  max = 100,
+  label,
+  showPercent = false,
+  className = '',
+  height = 'h-1.5'
+}) {
   const percent = max > 0 ? Math.min(100, Math.max(0, Math.round((value / max) * 100))) : 0;
 
   return (
@@ -11,9 +18,9 @@ export function ProgressBar({ value = 0, max = 100, label, showPercent = true, c
           {showPercent && <span className="font-mono text-slate-300">{percent}%</span>}
         </div>
       )}
-      <div className={`w-full bg-obsidian-950 rounded-full overflow-hidden border border-obsidian-700/60 ${height}`}>
+      <div className={`w-full bg-obsidian-750 rounded-full overflow-hidden ${height}`}>
         <div
-          className="bg-gradient-to-r from-brand-500 to-indigo-500 h-full rounded-full transition-all duration-300 ease-out"
+          className="bg-indigo-600 dark:bg-indigo-400 h-full rounded-full transition-all duration-300 ease-out"
           style={{ width: `${percent}%` }}
         />
       </div>

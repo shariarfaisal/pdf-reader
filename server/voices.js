@@ -310,6 +310,8 @@ export function writeVoiceManifest() {
 
 /** Public shape for the UI. */
 export function toPublicVoice(voice) {
+  const dir = voiceDir(voice.id);
+  const hasPreview = fs.existsSync(path.join(dir, 'preview.wav'));
   return {
     id: voice.id,
     name: voice.name,
@@ -319,7 +321,10 @@ export function toPublicVoice(voice) {
     createdAt: voice.created_at,
     updatedAt: voice.updated_at,
     audioUrl: `/api/voices/${voice.id}/audio`,
-    hasPromptCache: fs.existsSync(path.join(voiceDir(voice.id), 'prompt.pt')),
+    sampleUrl: `/api/voices/${voice.id}/audio`,
+    hasPreview,
+    previewUrl: `/api/voices/${voice.id}/preview.wav`,
+    hasPromptCache: fs.existsSync(path.join(dir, 'prompt.pt')),
     transcriptWarning: transcriptMismatch(voice)
   };
 }

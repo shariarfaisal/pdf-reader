@@ -5,9 +5,9 @@
   "type": "module",
   "main": "server/index.js",
   "scripts": {
-    "dev": "node server/index.js",
+    "dev": "node --env-file-if-exists=.env server/index.js",
     "build:frontend": "vite build",
-    "start": "node server/index.js",
+    "start": "node --env-file-if-exists=.env server/index.js",
     "test:pipeline": "node --import ./tests/pipeline-lanes/register.mjs ./tests/pipeline-lanes/run.mjs"
   },
   "keywords": [],

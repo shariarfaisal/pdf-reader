@@ -11,14 +11,25 @@ const SYNTHESIZER_BIN = path.resolve(process.cwd(), 'bin', 'tts_synthesizer.py')
 const BENGALI_REGEX = /[\u0980-\u09FF]/;
 const ARABIC_REGEX = /[\u0600-\u06FF]/;
 
-// Singleton handle to guarantee only 1 Python TTS process ever runs at a time
+// Singleton handle + FIFO queue to guarantee only 1 Python TTS process ever runs at a time on 8GB M2
 let activeTtsProcess = null;
+let activeTtsOwner = null;
+const ttsWaitQueue = [];
 
 /**
- * Immediately terminate any in-flight TTS synthesis process and free its RAM/MPS memory
+ * Immediately terminate any in-flight TTS synthesis process and free its RAM/MPS memory.
+ * When `projectId` is given, only aborts work belonging to that project so other
+ * concurrently running projects are never interrupted.
  */
-export function abortActiveSynthesis() {
-  if (activeTtsProcess) {
+export function abortActiveSynthesis(projectId = null) {
+  for (let i = ttsWaitQueue.length - 1; i >= 0; i--) {
+    if (!projectId || ttsWaitQueue[i].projectId === projectId) {
+      const [removed] = ttsWaitQueue.splice(i, 1);
+      removed.cancel();
+    }
+  }
+
+  if (activeTtsProcess && (!projectId || activeTtsOwner === projectId)) {
     try {
       activeTtsProcess.kill('SIGTERM');
       const proc = activeTtsProcess;
@@ -29,7 +40,43 @@ export function abortActiveSynthesis() {
       }, 800);
     } catch {}
     activeTtsProcess = null;
+    activeTtsOwner = null;
   }
+}
+
+function acquireTtsSlot(projectId = null, signal = null) {
+  if (signal?.aborted) {
+    return Promise.reject(new Error('Synthesis cancelled by user.'));
+  }
+  if (!activeTtsProcess && ttsWaitQueue.length === 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const entry = {
+      projectId,
+      grant: () => {
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      cancel: () => {
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+        reject(new Error('Synthesis cancelled by user.'));
+      }
+    };
+    const onAbort = () => {
+      const idx = ttsWaitQueue.indexOf(entry);
+      if (idx !== -1) ttsWaitQueue.splice(idx, 1);
+      reject(new Error('Synthesis cancelled by user.'));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    ttsWaitQueue.push(entry);
+  });
+}
+
+function releaseTtsSlot() {
+  if (activeTtsProcess) return;
+  const next = ttsWaitQueue.shift();
+  if (next) next.grant();
 }
 
 /**
@@ -98,7 +145,7 @@ export function detectVoiceForText(text, settings = {}) {
  *   - 'colab'  : remote Colab GPU worker only (errors surface to the pipeline)
  *   - 'auto'   : try Colab first, fall back to local synthesis on any failure
  */
-export async function synthesizeAudio(text, outputPath, settings = {}) {
+export async function synthesizeAudio(text, outputPath, settings = {}, options = {}) {
   if (!text || !text.trim()) {
     return { audioPath: null, duration: 0 };
   }
@@ -117,7 +164,7 @@ export async function synthesizeAudio(text, outputPath, settings = {}) {
     }
   }
 
-  return synthesizeAudioLocal(text, outputPath, settings, voice);
+  return synthesizeAudioLocal(text, outputPath, settings, voice, options);
 }
 
 /**
@@ -126,13 +173,16 @@ export async function synthesizeAudio(text, outputPath, settings = {}) {
  * - Edge-TTS Neural broadcast voices fallback
  * - Native macOS speech fallback
  */
-export async function synthesizeAudioLocal(text, outputPath, settings = {}, resolvedVoice = null) {
+export async function synthesizeAudioLocal(text, outputPath, settings = {}, resolvedVoice = null, options = {}) {
   if (!text || !text.trim()) {
     return { audioPath: null, duration: 0 };
   }
 
-  // Never allow two Python TTS processes to run concurrently on 8GB M2 MacBook Air
-  abortActiveSynthesis();
+  const { projectId = null, signal = null } = options;
+
+  // Serialize local Python TTS processes across concurrent projects so we stay < 1.8 GB RAM
+  // on 8GB M2 MacBook Air without killing another project's synthesis.
+  await acquireTtsSlot(projectId, signal);
 
   const dir = path.dirname(outputPath);
   if (!fs.existsSync(dir)) {
@@ -164,6 +214,11 @@ export async function synthesizeAudioLocal(text, outputPath, settings = {}, reso
   };
 
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      releaseTtsSlot();
+      return reject(new Error('Synthesis cancelled by user.'));
+    }
+
     const child = spawn(
       pythonBin,
       [SYNTHESIZER_BIN, outputPath, text, voice.id || voice.name, speed, instruct, String(numStep)],
@@ -173,16 +228,36 @@ export async function synthesizeAudioLocal(text, outputPath, settings = {}, reso
       }
     );
     activeTtsProcess = child;
+    activeTtsOwner = projectId;
+
+    const onSignalAbort = () => {
+      if (activeTtsProcess === child) {
+        abortActiveSynthesis(projectId);
+      } else {
+        try { child.kill('SIGTERM'); } catch {}
+      }
+    };
+    if (signal) signal.addEventListener('abort', onSignalAbort, { once: true });
 
     let stdout = '';
     let stderr = '';
 
+    const cleanupSlot = () => {
+      if (signal) signal.removeEventListener('abort', onSignalAbort);
+      if (activeTtsProcess === child) {
+        activeTtsProcess = null;
+        activeTtsOwner = null;
+      }
+      releaseTtsSlot();
+    };
+
     const timer = setTimeout(() => {
       if (activeTtsProcess === child) {
-        abortActiveSynthesis();
+        abortActiveSynthesis(projectId);
       } else {
         try { child.kill('SIGKILL'); } catch {}
       }
+      cleanupSlot();
       reject(new Error('TTS synthesis timed out after 10 minutes.'));
     }, 600000);
 
@@ -196,15 +271,15 @@ export async function synthesizeAudioLocal(text, outputPath, settings = {}, reso
 
     child.on('error', (err) => {
       clearTimeout(timer);
-      if (activeTtsProcess === child) activeTtsProcess = null;
+      cleanupSlot();
       reject(new Error(`TTS process error: ${err.message}`));
     });
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code, closeSignal) => {
       clearTimeout(timer);
-      if (activeTtsProcess === child) activeTtsProcess = null;
+      cleanupSlot();
 
-      if (signal === 'SIGTERM' || signal === 'SIGKILL' || code === 130) {
+      if (signal?.aborted || closeSignal === 'SIGTERM' || closeSignal === 'SIGKILL' || code === 130) {
         return reject(new Error('Synthesis cancelled by user.'));
       }
 

@@ -3,6 +3,7 @@ import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import { Field, TextInput } from './ui/Field';
 import { UploadCloud, FileText, FolderPlus } from 'lucide-react';
+import { formatBookDisplayTitle } from '../lib/format';
 
 export function NewProjectModal({ isOpen, onClose, onCreateProject }) {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -17,7 +18,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }) {
       const file = e.target.files[0];
       setSelectedFile(file);
       if (!projectName) {
-        setProjectName(file.name.replace(/\.[^/.]+$/, ''));
+        setProjectName(formatBookDisplayTitle(file.name));
       }
     }
   };
@@ -36,7 +37,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }) {
         }
         const formData = new FormData();
         formData.append('pdf', selectedFile);
-        formData.append('name', projectName || selectedFile.name);
+        formData.append('name', projectName || formatBookDisplayTitle(selectedFile.name));
         await onCreateProject(formData, true);
       } else {
         if (!localPath.trim()) {
@@ -47,7 +48,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }) {
         await onCreateProject(
           {
             pdfPath: localPath.trim(),
-            name: projectName || localPath.split('/').pop().replace(/\.[^/.]+$/, '')
+            name: projectName || formatBookDisplayTitle(localPath.split('/').pop())
           },
           false
         );
@@ -118,7 +119,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }) {
           <Field label="Local File Path" hint="Absolute path on your machine">
             <TextInput
               mono
-              placeholder="/Users/macbookm2air/Books/sample.pdf"
+              placeholder="/path/to/your/book.pdf"
               value={localPath}
               onChange={(e) => setLocalPath(e.target.value)}
             />

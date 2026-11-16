@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: the theme toggle sets html.light / html.dark. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-obsidian-950: var(--obsidian-950);
   --color-obsidian-900: var(--obsidian-900);
@@ -9,80 +12,154 @@
   --color-obsidian-700: var(--obsidian-700);
   --color-obsidian-600: var(--obsidian-600);
 
-  --color-brand-50: #f0f9ff;
-  --color-brand-100: #e0f2fe;
-  --color-brand-300: #7dd3fc;
-  --color-brand-400: #38bdf8;
-  --color-brand-500: #0ea5e9;
-  --color-brand-600: #0284c7;
+  /* Semantic primary brand tokens mapped to CSS variables */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: var(--primary-fill);
+  --color-brand-600: var(--primary-hover);
 
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-bengali: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
-  --font-arabic: 'Amiri', 'Scheherazade New', serif;
+  --font-bengali: 'Noto Sans Bengali', 'Hind Siliguri', sans-serif;
+  --font-bengali-serif: 'Noto Serif Bengali', 'Hind Siliguri', serif;
+  --font-arabic: 'Noto Sans Arabic', 'Amiri', 'Scheherazade New', serif;
+  --font-arabic-serif: 'Noto Naskh Arabic', 'Amiri', 'Scheherazade New', serif;
   --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, monospace;
 }
 
 :root, html.dark {
   color-scheme: dark;
-  --obsidian-950: #070a0f;
-  --obsidian-900: #0b0f17;
-  --obsidian-850: #0f1622;
-  --obsidian-800: #131b26;
-  --obsidian-750: #182232;
-  --obsidian-700: #1e293b;
-  --obsidian-600: #334155;
-  --app-bg: #0b0f17;
-  --app-color: #f8fafc;
-  --app-scrollbar-thumb: #1e293b;
-  --app-scrollbar-hover: #334155;
+
+  /* Semantic palette - Dark Theme */
+  --bg-app: #11151C;
+  --surface-card: #191F29;
+  --surface-raised: #222B38;
+  --surface-subtle: #242E3D;
+
+  --text-primary: #EEF2F7;
+  --text-secondary: #B4BECD;
+  --text-muted: #9AA8BA;
+
+  --border-subtle: #323D4D;
+  --border-control: #4B5565;
+
+  --primary-fill: #A69CFF;
+  --primary-fg: #17122C;
+  --primary-hover: #B8B0FF;
+
+  --selected-bg: #2B2546;
+  --selected-text: #B7AEFF;
+
+  --narration-bg: #1B2028;
+  --narration-text: #E0E5EC;
+
+  /* Semantic status tokens */
+  --status-success-text: #86EFAC;
+  --status-success-bg: #163526;
+  --status-success-border: #23543D;
+
+  --status-warning-text: #FCD34D;
+  --status-warning-bg: #3A2C14;
+  --status-warning-border: #5C4518;
+
+  --status-error-text: #FDA29B;
+  --status-error-bg: #402425;
+  --status-error-border: #6B3438;
+
+  --status-info-text: #93C5FD;
+  --status-info-bg: #1C304A;
+  --status-info-border: #2A486F;
+
+  /* Compatibility mappings for obsidian hierarchy in dark mode */
+  --obsidian-950: #0b0f15;
+  --obsidian-900: #11151C;
+  --obsidian-850: #191F29;
+  --obsidian-800: #222B38;
+  --obsidian-750: #242E3D;
+  --obsidian-700: #323D4D;
+  --obsidian-600: #4B5565;
+
+  --app-bg: #11151C;
+  --app-color: #EEF2F7;
+  --app-scrollbar-thumb: #323D4D;
+  --app-scrollbar-hover: #4B5565;
+
+  /* Secondary text floor: Tailwind's slate-500 (#62748e) sits at ~3.4:1 on
+     card surfaces, below AA for 11-12px hints. Lift it once here instead of
+     patching every hint, path caption and label. */
+  --color-slate-500: #8494A9;
 }
 
 html.light {
   color-scheme: light;
-  --obsidian-950: #f1f5f9;
-  --obsidian-900: #ffffff;
-  --obsidian-850: #f8fafc;
-  --obsidian-800: #f1f5f9;
-  --obsidian-750: #e2e8f0;
-  --obsidian-700: #cbd5e1;
-  --obsidian-600: #94a3b8;
-  --app-bg: #f8fafc;
-  --app-color: #0f172a;
-  --app-scrollbar-thumb: #cbd5e1;
-  --app-scrollbar-hover: #94a3b8;
 
-  /* In light mode, map slate hierarchy to high-contrast dark text */
-  --color-slate-50: #020617;
-  --color-slate-100: #0f172a;
-  --color-slate-200: #1e293b;
+  /* Semantic palette - Light Theme */
+  --bg-app: #F6F7F9;
+  --surface-card: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --surface-subtle: #EEF1F6;
+
+  --text-primary: #172033;
+  --text-secondary: #526078;
+  --text-muted: #667085;
+
+  --border-subtle: #DCE2EA;
+  --border-control: #CBD5E1;
+
+  --primary-fill: #4F46E5;
+  --primary-fg: #FFFFFF;
+  --primary-hover: #4338CA;
+
+  --selected-bg: #EEEBFF;
+  --selected-text: #4338CA;
+
+  --narration-bg: #FFFDF8;
+  --narration-text: #292723;
+
+  /* Semantic status tokens */
+  --status-success-text: #166534;
+  --status-success-bg: #DCFCE7;
+  --status-success-border: #BBF7D0;
+
+  --status-warning-text: #92400E;
+  --status-warning-bg: #FEF3C7;
+  --status-warning-border: #FDE68A;
+
+  --status-error-text: #B42318;
+  --status-error-bg: #FEE4E2;
+  --status-error-border: #FECDCA;
+
+  --status-info-text: #1D4ED8;
+  --status-info-bg: #DBEAFE;
+  --status-info-border: #BFDBFE;
+
+  /* Compatibility mappings for obsidian hierarchy in light mode */
+  --obsidian-950: #F6F7F9;
+  --obsidian-900: #F6F7F9;
+  --obsidian-850: #FFFFFF;
+  --obsidian-800: #FFFFFF;
+  --obsidian-750: #EEF1F6;
+  --obsidian-700: #DCE2EA;
+  --obsidian-600: #CBD5E1;
+
+  --app-bg: #F6F7F9;
+  --app-color: #172033;
+  --app-scrollbar-thumb: #CBD5E1;
+  --app-scrollbar-hover: #94A3B8;
+
+  /* Map slate hierarchy cleanly in light mode so existing slate utility classes render readable high contrast */
+  --color-slate-50: #0F172A;
+  --color-slate-100: #172033;
+  --color-slate-200: #242E3D;
   --color-slate-300: #334155;
-  --color-slate-400: #475569;
-  --color-slate-500: #64748b;
-  --color-slate-600: #94a3b8;
-  --color-slate-700: #cbd5e1;
-  --color-slate-800: #e2e8f0;
-  --color-slate-900: #f8fafc;
-  --color-slate-950: #ffffff;
-}
-
-html.light .text-white {
-  color: #0f172a;
-}
-
-html.light .hover\:text-white:hover {
-  color: #020617;
-}
-
-/* Ensure white text remains white on dark/brand buttons and badges */
-html.light button.bg-brand-500,
-html.light button.bg-brand-600,
-html.light [class*="bg-brand-"] .text-white,
-html.light [class*="bg-brand-500"],
-html.light [class*="bg-brand-600"],
-html.light [class*="bg-blue-600"],
-html.light [class*="bg-emerald-600"],
-html.light .btn-brand {
-  color: #ffffff;
+  --color-slate-400: #526078;
+  --color-slate-500: #667085;
+  --color-slate-600: #7B879A;
+  --color-slate-700: #CBD5E1;
+  --color-slate-800: #E2E8F0;
+  --color-slate-900: #F1F5F9;
+  --color-slate-950: #FFFFFF;
 }
 
 @layer base {
@@ -91,7 +168,7 @@ html.light .btn-brand {
     color: var(--app-color);
     font-family: var(--font-sans);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-    transition: background-color 0.2s ease, color 0.2s ease;
+    transition: background-color 0.15s ease, color 0.15s ease;
   }
 
   /* Custom subtle scrollbar */
@@ -111,13 +188,76 @@ html.light .btn-brand {
   }
 }
 
+/* Explicit semantic helper classes */
+.bg-app { background-color: var(--bg-app); }
+.bg-card-surface { background-color: var(--surface-card); }
+.bg-raised { background-color: var(--surface-raised); }
+.bg-subtle { background-color: var(--surface-subtle); }
+
+.text-primary-app { color: var(--text-primary); }
+.text-secondary-app { color: var(--text-secondary); }
+.text-muted-app { color: var(--text-muted); }
+
+.border-subtle-app { border-color: var(--border-subtle); }
+.border-control-app { border-color: var(--border-control); }
+
+/* Primary button with theme-aware foreground contrast */
+.btn-primary-token {
+  background-color: var(--primary-fill);
+  color: var(--primary-fg);
+}
+.btn-primary-token:hover:not(:disabled) {
+  background-color: var(--primary-hover);
+}
+
+/* Selected state styling */
+.is-selected-token {
+  background-color: var(--selected-bg) !important;
+  color: var(--selected-text) !important;
+}
+
+/* Status styles */
+.status-pill-success {
+  background-color: var(--status-success-bg);
+  color: var(--status-success-text);
+  border-color: var(--status-success-border);
+}
+
+.status-pill-warning {
+  background-color: var(--status-warning-bg);
+  color: var(--status-warning-text);
+  border-color: var(--status-warning-border);
+}
+
+.status-pill-error {
+  background-color: var(--status-error-bg);
+  color: var(--status-error-text);
+  border-color: var(--status-error-border);
+}
+
+.status-pill-info {
+  background-color: var(--status-info-bg);
+  color: var(--status-info-text);
+  border-color: var(--status-info-border);
+}
+
 /* Multilingual text classes */
+.font-bengali-ui {
+  font-family: 'Noto Sans Bengali', 'Hind Siliguri', sans-serif;
+}
+
 .font-bengali-reading {
-  font-family: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
+  font-family: 'Noto Serif Bengali', 'Hind Siliguri', serif;
+}
+
+.font-arabic-ui {
+  font-family: 'Noto Sans Arabic', 'Amiri', 'Scheherazade New', serif;
+  direction: rtl;
+  text-align: right;
 }
 
 .font-arabic-reading {
-  font-family: 'Amiri', 'Scheherazade New', serif;
+  font-family: 'Noto Naskh Arabic', 'Amiri', 'Scheherazade New', serif;
   direction: rtl;
   text-align: right;
 }
@@ -148,13 +288,8 @@ html.dark .reader-theme-sepia {
 }
 
 .reader-theme-paper {
-  background-color: #ffffff;
-  color: #0f172a;
-}
-
-html.dark .reader-theme-paper {
-  background-color: #0b0f17;
-  color: #f8fafc;
+  background-color: var(--narration-bg);
+  color: var(--narration-text);
 }
 
 .reader-theme-oled {
@@ -164,56 +299,185 @@ html.dark .reader-theme-paper {
 
 /* Active reading line highlights */
 .reader-highlight-glow {
-  background-color: rgba(56, 189, 248, 0.16);
-  border-left: 4px solid #38bdf8;
+  background-color: rgba(79, 70, 229, 0.12);
+  border-left: 3px solid var(--primary-fill);
   padding-left: 0.875rem;
   padding-right: 0.5rem;
-  border-radius: 0 0.5rem 0.5rem 0;
+  border-radius: 0 0.375rem 0.375rem 0;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 0 16px -2px rgba(56, 189, 248, 0.15);
+}
+
+html.dark .reader-highlight-glow {
+  background-color: rgba(166, 156, 255, 0.15);
 }
 
 .reader-highlight-subtle {
-  background-color: rgba(56, 189, 248, 0.08);
-  border-left: 3px solid #0284c7;
+  background-color: rgba(79, 70, 229, 0.08);
+  border-left: 2px solid var(--primary-fill);
   padding-left: 0.75rem;
-  border-radius: 0 0.375rem 0.375rem 0;
+  border-radius: 0 0.25rem 0.25rem 0;
   transition: all 0.15s ease;
 }
 
+/* Spoken sentence, wrapped inline inside the active paragraph */
+.reader-spoken {
+  border-radius: 0.25rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition: background-color 0.15s ease;
+}
+
+.reader-spoken-subtle {
+  background-color: rgba(79, 70, 229, 0.16);
+}
+
+.reader-spoken-glow {
+  background-color: rgba(79, 70, 229, 0.26);
+}
+
+.reader-spoken-warm {
+  background-color: rgba(245, 158, 11, 0.3);
+}
+
+html.dark .reader-spoken-subtle {
+  background-color: rgba(166, 156, 255, 0.2);
+}
+
+html.dark .reader-spoken-glow {
+  background-color: rgba(166, 156, 255, 0.3);
+}
+
+html.dark .reader-spoken-warm {
+  background-color: rgba(245, 158, 11, 0.32);
+}
+
 .reader-highlight-warm {
-  background-color: rgba(245, 158, 11, 0.14);
-  border-left: 4px solid #f59e0b;
+  background-color: rgba(245, 158, 11, 0.12);
+  border-left: 3px solid #f59e0b;
   padding-left: 0.875rem;
   padding-right: 0.5rem;
-  border-radius: 0 0.5rem 0.5rem 0;
+  border-radius: 0 0.375rem 0.375rem 0;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 0 16px -2px rgba(245, 158, 11, 0.15);
 }
 
 .active-reading-line {
-  background-color: rgba(56, 189, 248, 0.14);
-  border-left: 3px solid #38bdf8;
+  background-color: rgba(79, 70, 229, 0.1);
+  border-left: 3px solid var(--primary-fill);
   padding-left: 0.75rem;
-  border-radius: 0 0.375rem 0.375rem 0;
-  transition: all 0.2s ease;
+  border-radius: 0 0.25rem 0.25rem 0;
+  transition: all 0.15s ease;
 }
 
-/* Document page shadow effect for realistic PDF reader look */
-.pdf-page-sheet {
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px var(--obsidian-750);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+/* Document page sheet inside Reader */
+.pdf-page-sheet,
+.sheet-theme-paper {
+  --sheet-bg: #FFFDF9;
+  --sheet-header-bg: #F6F4EE;
+  --sheet-text: #1E2430;
+  --sheet-muted: #5A6578;
+  --sheet-border: #E2DFD7;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.04);
+  border: 1px solid var(--sheet-border);
+  background-color: var(--sheet-bg);
+  color: var(--sheet-text);
 }
 
-html.dark .pdf-page-sheet {
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.06);
+html.dark .pdf-page-sheet,
+html.dark .sheet-theme-paper {
+  --sheet-bg: #171C24;
+  --sheet-header-bg: #131820;
+  --sheet-text: #E6ECF5;
+  --sheet-muted: #94A3B8;
+  --sheet-border: #283241;
+  box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.45);
+}
+
+.sheet-theme-sepia {
+  --sheet-bg: #FBF5E8;
+  --sheet-header-bg: #F3EAD6;
+  --sheet-text: #2C2216;
+  --sheet-muted: #6E5A42;
+  --sheet-border: #E2D5BE;
+}
+
+html.dark .sheet-theme-sepia {
+  --sheet-bg: #1B1610;
+  --sheet-header-bg: #15110C;
+  --sheet-text: #EADBC4;
+  --sheet-muted: #A69276;
+  --sheet-border: #33291E;
+}
+
+.sheet-theme-obsidian {
+  --sheet-bg: #0D1117;
+  --sheet-header-bg: #090C10;
+  --sheet-text: #E6EDF3;
+  --sheet-muted: #8B949E;
+  --sheet-border: #21262D;
+}
+
+html.dark .sheet-theme-obsidian {
+  --sheet-bg: #0D1117;
+  --sheet-header-bg: #090C10;
+  --sheet-text: #E6EDF3;
+  --sheet-muted: #8B949E;
+  --sheet-border: #21262D;
+}
+
+.sheet-theme-midnight {
+  --sheet-bg: #0B1324;
+  --sheet-header-bg: #080E1C;
+  --sheet-text: #E2E8F0;
+  --sheet-muted: #94A3B8;
+  --sheet-border: #1E293B;
+}
+
+html.dark .sheet-theme-midnight {
+  --sheet-bg: #0B1324;
+  --sheet-header-bg: #080E1C;
+  --sheet-text: #E2E8F0;
+  --sheet-muted: #94A3B8;
+  --sheet-border: #1E293B;
+}
+
+.sheet-theme-oled {
+  --sheet-bg: #000000;
+  --sheet-header-bg: #080808;
+  --sheet-text: #F8FAFC;
+  --sheet-muted: #94A3B8;
+  --sheet-border: #262626;
+}
+
+html.dark .sheet-theme-oled {
+  --sheet-bg: #000000;
+  --sheet-header-bg: #080808;
+  --sheet-text: #F8FAFC;
+  --sheet-muted: #94A3B8;
+  --sheet-border: #262626;
 }
 
 .pdf-page-sheet.active-sheet {
-  box-shadow: 0 10px 30px -4px rgba(14, 165, 233, 0.15), 0 0 0 2px #38bdf8;
+  border-color: var(--primary-fill);
+  box-shadow: 0 0 0 2px var(--primary-fill);
 }
 
-/* Motion utilities (referenced by Modal / lists) */
+/* Realistic book cover spine crease */
+.book-spine-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 8px;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.24) 0%,
+    rgba(255, 255, 255, 0.14) 35%,
+    rgba(0, 0, 0, 0.08) 60%,
+    transparent 100%
+  );
+}
+
+/* Motion utilities */
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -230,9 +494,9 @@ html.dark .pdf-page-sheet {
 }
 
 @layer utilities {
-  .animate-fade-in { animation: fade-in 160ms ease-out both; }
-  .animate-modal-in { animation: modal-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-  .animate-rise-in { animation: rise-in 220ms ease-out both; }
+  .animate-fade-in { animation: fade-in 140ms ease-out both; }
+  .animate-modal-in { animation: modal-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-rise-in { animation: rise-in 180ms ease-out both; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -243,7 +507,7 @@ html.dark .pdf-page-sheet {
   }
 }
 
-/* Thin scrollbars for dense config panes */
-.scroll-slim::-webkit-scrollbar { width: 6px; }
+/* Thin scrollbars */
+.scroll-slim::-webkit-scrollbar { width: 5px; height: 5px; }
 .scroll-slim::-webkit-scrollbar-thumb { background: var(--app-scrollbar-thumb); border-radius: 9999px; }
 .scroll-slim::-webkit-scrollbar-thumb:hover { background: var(--app-scrollbar-hover); }

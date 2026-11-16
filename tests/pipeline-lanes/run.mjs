@@ -225,21 +225,61 @@ async function waitIdle(timeout = 30000) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Switching projects mid-run releases the previous engine
+// 8. Simultaneous multi-project execution & strict per-project isolation
 // ---------------------------------------------------------------------------
 {
-  const a = makeProject('proj-h1', 6);
+  const a = makeProject('proj-h1', 4);
   const b = makeProject('proj-h2', 4);
   globalThis.__stageLog = [];
   await pipeline.start(a, { stage: 'all' });
-  await sleep(400);
+  await sleep(120);
   await pipeline.start(b, { stage: 'ocr' });
-  const idle = await waitIdle(30000);
+  await sleep(40);
+  const stateA = pipeline.getProjectState(a);
+  const stateB = pipeline.getProjectState(b);
+  check(
+    'both projects run simultaneously in parallel',
+    pipeline.isProjectRunning(a) && (pipeline.isProjectRunning(b) || queries.getPagesByProjectId(b).every((p) => p.raw_text)),
+    `a=${JSON.stringify(stateA.stages)} b=${JSON.stringify(stateB.stages)}`
+  );
+  check(
+    'project B stages are isolated from project A (refine/audio stay idle on B)',
+    stateB.stages.refine === 'idle' && stateB.stages.audio === 'idle',
+    `b.stages=${JSON.stringify(stateB.stages)}`
+  );
+  const idle = await waitIdle(40000);
   const pagesB = queries.getPagesByProjectId(b);
   const pagesA = queries.getPagesByProjectId(a);
-  check('second project runs after a switch', idle && pagesB.every((p) => p.raw_text), `extracted=${pagesB.filter((p) => p.raw_text).length}/${pagesB.length}`);
-  check('engine only serves the new project', pipeline.activeProjectId === b, `active=${pipeline.activeProjectId}`);
-  check('previous project work stopped', pagesA.every((p) => !p.audio_path), `narrated=${pagesA.filter((p) => p.audio_path).length}`);
+  check('second project finishes its OCR in parallel', idle && pagesB.every((p) => p.raw_text), `extracted=${pagesB.filter((p) => p.raw_text).length}/${pagesB.length}`);
+  check('first project continues uninterrupted and finishes all stages', idle && pagesA.every((p) => p.audio_path), `narrated=${pagesA.filter((p) => p.audio_path).length}/${pagesA.length}`);
+  const finalA = pipeline.getProjectState(a);
+  const finalB = pipeline.getProjectState(b);
+  check(
+    'per-project logs are strictly isolated',
+    finalA.logs.length > 0 &&
+      finalB.logs.length > 0 &&
+      finalA.logs.every((l) => l.projectId === a) &&
+      finalB.logs.every((l) => l.projectId === b),
+    `logsA=${finalA.logs.length} logsB=${finalB.logs.length}`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 8b. Stopping one project never interrupts another concurrently running project
+// ---------------------------------------------------------------------------
+{
+  const a = makeProject('proj-h3', 6);
+  const b = makeProject('proj-h4', 4);
+  globalThis.__stageLog = [];
+  await pipeline.start(a, { stage: 'all' });
+  await pipeline.start(b, { stage: 'all' });
+  await sleep(300);
+  pipeline.stop(a);
+  const idleA = await pipeline.waitForLoopIdle(5000, a);
+  check('stopping project A releases project A immediately', idleA && !pipeline.isProjectRunning(a));
+  const idleAll = await waitIdle(40000);
+  const pagesB = queries.getPagesByProjectId(b);
+  check('project B continues running and completes every page', idleAll && pagesB.every((p) => p.audio_path), `readyB=${pagesB.filter((p) => p.audio_path).length}/${pagesB.length}`);
 }
 
 // ---------------------------------------------------------------------------

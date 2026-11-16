@@ -5,7 +5,6 @@ import { SettingsModal } from './components/SettingsModal';
 import { NewProjectModal } from './components/NewProjectModal';
 import { ApiUsageDashboard } from './components/ApiUsageDashboard';
 import { VoiceStudio } from './components/VoiceStudio';
-import { ModelHub } from './components/ModelHub';
 import { Loader2 } from 'lucide-react';
 import { stageForStatus } from './lib/pageStages';
 import { useTheme } from './lib/theme';
@@ -17,13 +16,31 @@ import {
   LIBRARY_PATH,
   USAGE_PATH,
   VOICES_PATH,
-  MODELS_PATH
+  MODELS_PATH,
+  SETTINGS_PATH
 } from './lib/router';
+import { SettingsView } from './components/SettingsView';
+import { GlobalAudioProvider, useAudioPlayer } from './lib/audioPlayerContext';
+import { FloatingAudioPlayer } from './components/FloatingAudioPlayer';
 
 export function App() {
+  const autoFollowRef = useRef(null);
+  return (
+    <GlobalAudioProvider
+      onAutoFollowPage={(projId, prevPage, nextPage) => {
+        autoFollowRef.current?.(projId, prevPage, nextPage);
+      }}
+    >
+      <AppContent autoFollowRef={autoFollowRef} />
+    </GlobalAudioProvider>
+  );
+}
+
+function AppContent({ autoFollowRef }) {
   const { theme, isDark } = useTheme();
   const route = useRoute();
   const currentProjectId = route.name === 'project' ? route.projectId : null;
+  const audioPlayer = useAudioPlayer();
 
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
@@ -34,13 +51,12 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
 
-  const [logs, setLogs] = useState([]);
+  const [logsByProject, setLogsByProject] = useState({});
   const [remoteStatus, setRemoteStatus] = useState({ state: 'stopped' });
-  // Per-stage pipeline state (ocr / refine / audio), pushed by the engine.
-  const [pipelineStages, setPipelineStages] = useState({ ocr: 'idle', refine: 'idle', audio: 'idle' });
-  // Stage lanes run in parallel, so several pages can be mid-flight at once:
-  // map each running stage to the page it is working on right now.
-  const [activeRuns, setActiveRuns] = useState({});
+  // Per-project stage states (ocr / refine / audio) and active page pointers so
+  // multiple projects can run simultaneously without bleeding UI state.
+  const [stagesByProject, setStagesByProject] = useState({});
+  const [activeRunsByProject, setActiveRunsByProject] = useState({});
   const [systemHealth, setSystemHealth] = useState({
     cpuCount: 8,
     load1m: '0.00',
@@ -48,6 +64,17 @@ export function App() {
     usedMemMB: 4096,
     memPercent: 50
   });
+
+  const currentProjectIdRef = useRef(currentProjectId);
+  currentProjectIdRef.current = currentProjectId;
+
+  const pipelineStages = (currentProjectId && stagesByProject[currentProjectId]) || {
+    ocr: 'idle',
+    refine: 'idle',
+    audio: 'idle'
+  };
+  const activeRuns = (currentProjectId && activeRunsByProject[currentProjectId]) || {};
+  const projectLogs = (currentProjectId && logsByProject[currentProjectId]) || [];
 
   // Fetch all projects
   const loadProjects = useCallback(async () => {
@@ -62,19 +89,34 @@ export function App() {
     }
   }, []);
 
-  // Fetch current project and its pages
+  // Fetch current project and its pages + project-scoped pipeline state
   const loadProjectDetails = useCallback(async (projectId) => {
     try {
       const res = await fetch(`/api/projects/${projectId}`);
       if (res.ok) {
         const data = await res.json();
-        setCurrentProject(data.project);
-        setPages(data.pages || []);
+        if (data.pipeline) {
+          if (data.pipeline.stages) {
+            setStagesByProject((prev) => ({ ...prev, [projectId]: data.pipeline.stages }));
+          }
+          if (data.pipeline.activeRuns) {
+            setActiveRunsByProject((prev) => ({ ...prev, [projectId]: data.pipeline.activeRuns }));
+          }
+          if (Array.isArray(data.pipeline.logs)) {
+            setLogsByProject((prev) => ({ ...prev, [projectId]: data.pipeline.logs }));
+          }
+        }
+        if (currentProjectIdRef.current === projectId) {
+          setCurrentProject(data.project);
+          setPages(data.pages || []);
+        }
         return data;
       }
       // Project vanished (deleted in another tab) — fall back to the library.
-      setCurrentProject(null);
-      setPages([]);
+      if (currentProjectIdRef.current === projectId) {
+        setCurrentProject(null);
+        setPages([]);
+      }
       if (matchRoute().projectId === projectId) {
         navigate(LIBRARY_PATH, { replace: true });
       }
@@ -134,9 +176,9 @@ export function App() {
 
   // Load project data once per project route (not per page change)
   useEffect(() => {
+    setCurrentProject(null);
+    setPages([]);
     if (!currentProjectId) {
-      setCurrentProject(null);
-      setPages([]);
       return;
     }
 
@@ -175,40 +217,75 @@ export function App() {
     });
   }, [route, currentProjectId, pages.length]);
 
-  // SSE Subscription for live pipeline logs & events
+  // SSE Subscription for live pipeline logs & events (scoped per project)
   useEffect(() => {
     const eventSource = new EventSource('/api/events');
 
     eventSource.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
+        const activeProjId = currentProjectIdRef.current;
 
         if (event.type === 'log') {
-          setLogs(prev => [...prev.slice(-300), event]);
+          if (event.projectId) {
+            setLogsByProject((prev) => ({
+              ...prev,
+              [event.projectId]: [...(prev[event.projectId] || []).slice(-299), event]
+            }));
+          }
+        } else if (event.type === 'logs_cleared') {
+          if (event.projectId) {
+            setLogsByProject((prev) => ({ ...prev, [event.projectId]: [] }));
+          }
         } else if (event.type === 'system_health') {
           setSystemHealth(event);
         } else if (event.type === 'remote_status') {
           setRemoteStatus(event.status || { state: 'stopped' });
         } else if (event.type === 'stage_status') {
-          // Stage state is engine-wide: only mirror it for the project on screen.
-          if (event.stages && (!event.projectId || event.projectId === currentProjectId)) {
-            setPipelineStages(event.stages);
+          if (event.projectId && event.stages) {
+            setStagesByProject((prev) => ({ ...prev, [event.projectId]: event.stages }));
+          }
+          if (event.projectId && event.activeRuns) {
+            setActiveRunsByProject((prev) => ({ ...prev, [event.projectId]: event.activeRuns }));
           }
         } else if (event.type === 'engine_state') {
-          if (event.stages) setPipelineStages(event.stages);
+          if (event.projects && typeof event.projects === 'object') {
+            setStagesByProject((prev) => {
+              const next = { ...prev };
+              for (const [id, snap] of Object.entries(event.projects)) {
+                if (snap?.stages) next[id] = snap.stages;
+              }
+              return next;
+            });
+            setActiveRunsByProject((prev) => {
+              const next = { ...prev };
+              for (const [id, snap] of Object.entries(event.projects)) {
+                if (snap?.activeRuns) next[id] = snap.activeRuns;
+              }
+              return next;
+            });
+          } else if (event.activeProjectId && event.stages) {
+            setStagesByProject((prev) => ({ ...prev, [event.activeProjectId]: event.stages }));
+          }
         } else if (event.type === 'page_status') {
-          if (event.projectId === currentProjectId) {
-            // A lane reports its own stage; lanes advance independently so the
-            // grid keeps one in-flight page per stage instead of a single one.
+          if (event.projectId) {
             const stage = event.stage || stageForStatus(event.status);
-            if (stage) {
-              setActiveRuns((prev) => ({
+            if (event.activeRuns) {
+              setActiveRunsByProject((prev) => ({ ...prev, [event.projectId]: event.activeRuns }));
+            } else if (stage) {
+              setActiveRunsByProject((prev) => ({
                 ...prev,
-                [stage]: stageForStatus(event.status) ? event.pageNumber : null
+                [event.projectId]: {
+                  ...(prev[event.projectId] || {}),
+                  [stage]: stageForStatus(event.status) ? event.pageNumber : null
+                }
               }));
             }
-            setPages(prevPages =>
-              prevPages.map(p => {
+          }
+
+          if (event.projectId === activeProjId) {
+            setPages((prevPages) =>
+              prevPages.map((p) => {
                 if (p.page_number === event.pageNumber) {
                   return { ...p, status: event.status, updated_at: Date.now() };
                 }
@@ -217,12 +294,38 @@ export function App() {
             );
             // Refresh detailed page fields in background
             loadProjectDetails(event.projectId);
+          } else if (
+            event.status === 'ready' &&
+            audioPlayer.session.projectId === event.projectId
+          ) {
+            fetch(`/api/projects/${event.projectId}`)
+              .then((r) => (r.ok ? r.json() : null))
+              .then((data) => {
+                if (data) {
+                  audioPlayer.updateProjectPagesIfMatch(
+                    event.projectId,
+                    data.project,
+                    data.pages
+                  );
+                }
+              })
+              .catch(() => {});
+          }
+          if (event.status === 'ready') {
+            loadProjects();
           }
         } else if (event.type === 'project_status') {
-          if (event.projectId === currentProjectId) {
-            setCurrentProject(prev => prev ? { ...prev, status: event.status } : null);
+          if (event.projectId && event.stages) {
+            setStagesByProject((prev) => ({ ...prev, [event.projectId]: event.stages }));
           }
-          if (event.stages) setPipelineStages(event.stages);
+          if (event.projectId && event.activeRuns) {
+            setActiveRunsByProject((prev) => ({ ...prev, [event.projectId]: event.activeRuns }));
+          }
+          if (event.projectId === activeProjId) {
+            setCurrentProject((prev) =>
+              prev && prev.id === event.projectId ? { ...prev, status: event.status } : prev
+            );
+          }
           loadProjects();
         }
       } catch (err) {
@@ -233,7 +336,7 @@ export function App() {
     return () => {
       eventSource.close();
     };
-  }, [currentProjectId, loadProjectDetails, loadProjects]);
+  }, [loadProjectDetails, loadProjects, audioPlayer]);
 
   // Project Creation
   const handleCreateProject = async (payload, isUpload) => {
@@ -257,8 +360,30 @@ export function App() {
     }
   };
 
+  // Rename Project (inline title edit) — no updated_at bump, so library order holds
+  const handleRenameProject = async (id, name) => {
+    const res = await fetch(`/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Could not rename this book.');
+    }
+    const data = await res.json();
+    const renamed = data.project;
+
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, name: renamed.name } : p)));
+    setCurrentProject((prev) => (prev && prev.id === id ? { ...prev, name: renamed.name } : prev));
+    return renamed;
+  };
+
   // Delete Project
   const handleDeleteProject = async (id) => {
+    if (audioPlayer.session.projectId === id) {
+      audioPlayer.stopAndDismiss();
+    }
     await fetch(`/api/projects/${id}`, { method: 'DELETE' });
     if (currentProjectId === id) {
       navigate(LIBRARY_PATH, { replace: true });
@@ -276,6 +401,15 @@ export function App() {
     },
     [currentProjectId]
   );
+
+  // Follow auto-advancing audio pages only when viewing that exact playing page
+  useEffect(() => {
+    autoFollowRef.current = (projId, prevPage, nextPage) => {
+      if (currentProjectId === projId && activePageNumber === prevPage) {
+        selectPage(nextPage);
+      }
+    };
+  }, [autoFollowRef, currentProjectId, activePageNumber, selectPage]);
 
   // Pipeline Actions
   const handleStartPipeline = async (id, stage = null) => {
@@ -439,36 +573,43 @@ export function App() {
     return data;
   };
 
-  // No stage running means no page can be in flight — drop the stale pointers.
+  // No stage running on the active project means no page can be in flight for it.
   useEffect(() => {
+    if (!currentProjectId) return;
     const anyRunning = Object.values(pipelineStages || {}).some((state) => state === 'running');
-    if (!anyRunning) setActiveRuns({});
-  }, [pipelineStages]);
+    if (!anyRunning) {
+      setActiveRunsByProject((prev) => {
+        const existing = prev[currentProjectId];
+        if (!existing || Object.values(existing).every((v) => v === null || v === undefined)) {
+          return prev;
+        }
+        return { ...prev, [currentProjectId]: {} };
+      });
+    }
+  }, [currentProjectId, pipelineStages]);
 
   return (
     <div className="min-h-screen bg-obsidian-900 text-slate-100 flex flex-col font-sans">
-      {route.name === 'usage' ? (
-        <ApiUsageDashboard projects={projects} onBack={() => navigate(LIBRARY_PATH)} />
-      ) : route.name === 'voices' ? (
-        <VoiceStudio
-          onBack={() => navigate(LIBRARY_PATH)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenModels={() => navigate(MODELS_PATH)}
+      {route.name === 'settings' || route.name === 'usage' || route.name === 'voices' || route.name === 'models' || isSettingsOpen ? (
+        <SettingsView
+          tab={route.tab || (route.name !== 'settings' ? route.name : 'general')}
+          initialSettings={settings}
+          projects={projects}
+          onSave={handleSaveSettings}
+          onBack={() => {
+            setIsSettingsOpen(false);
+            navigate(LIBRARY_PATH);
+          }}
+          remoteStatus={remoteStatus}
+          onRemoteStart={handleRemoteStart}
+          onRemoteStop={handleRemoteStop}
         />
-      ) : route.name === 'models' ? (
-        <ModelHub
-          onBack={() => navigate(LIBRARY_PATH)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenVoices={() => navigate(VOICES_PATH)}
-          onOpenUsage={() => navigate(USAGE_PATH)}
-          onSettingsChanged={(next) => next && setSettings(next)}
-        />
-      ) : currentProjectId && currentProject ? (
+      ) : currentProjectId && currentProject && currentProject.id === currentProjectId ? (
         <ProjectWorkspace
           project={currentProject}
           pages={pages}
           activePageNumber={activePageNumber}
-          logs={logs}
+          logs={projectLogs}
           systemHealth={systemHealth}
           remoteStatus={remoteStatus}
           pipelineStages={pipelineStages}
@@ -479,7 +620,7 @@ export function App() {
             navigate(LIBRARY_PATH);
             loadProjects();
           }}
-          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenSettings={() => navigate(SETTINGS_PATH)}
           onOpenUsage={() => navigate(USAGE_PATH)}
           onOpenVoices={() => navigate(VOICES_PATH)}
           onOpenModels={() => navigate(MODELS_PATH)}
@@ -491,12 +632,17 @@ export function App() {
           onSelectPage={selectPage}
           onRegeneratePage={handleRegeneratePage}
           onRegenerateProject={handleRegenerateProject}
+          onRenameProject={handleRenameProject}
+          onDeleteProject={handleDeleteProject}
           onAddPage={(position, text) => handleAddPage(currentProject.id, position, text)}
           onUpdatePageText={(pageNumber, text) => handleUpdatePageText(currentProject.id, pageNumber, text)}
           onDeletePage={(pageNumber) => handleDeletePage(currentProject.id, pageNumber)}
           onDeletePages={(pageIds) => handleDeletePages(currentProject.id, pageIds)}
           onRefreshProject={() => loadProjectDetails(currentProject.id)}
-          onClearLogs={() => setLogs([])}
+          onClearLogs={() => {
+            setLogsByProject((prev) => ({ ...prev, [currentProject.id]: [] }));
+            fetch(`/api/projects/${currentProject.id}/logs`, { method: 'DELETE' }).catch(() => {});
+          }}
         />
       ) : currentProjectId ? (
         <div className="flex-1 flex items-center justify-center gap-3 text-slate-400 py-24">
@@ -506,15 +652,39 @@ export function App() {
       ) : (
         <ProjectList
           projects={projects}
-          onSelectProject={(id) => navigate(projectPath(id))}
+          onSelectProject={(id) => {
+            if (
+              audioPlayer.session.isActive &&
+              audioPlayer.session.projectId === id
+            ) {
+              navigate(projectPath(id, audioPlayer.session.playingPageNumber));
+            } else {
+              navigate(projectPath(id));
+            }
+          }}
           onNewProject={() => setIsNewProjectOpen(true)}
           onDeleteProject={handleDeleteProject}
+          onRenameProject={handleRenameProject}
           onOpenUsage={() => navigate(USAGE_PATH)}
           onOpenVoices={() => navigate(VOICES_PATH)}
           onOpenModels={() => navigate(MODELS_PATH)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenSettings={() => navigate(SETTINGS_PATH)}
         />
       )}
+
+      {/* Persistent Floating Audio Mini-Player across Library, Settings, and other views */}
+      <FloatingAudioPlayer
+        currentRouteProjectId={
+          route.name === 'project' &&
+          !isSettingsOpen
+            ? currentProjectId
+            : null
+        }
+        onOpenPlayingPage={(projId, pageNum) => {
+          setIsSettingsOpen(false);
+          navigate(projectPath(projId, pageNum));
+        }}
+      />
 
       {/* Settings Modal */}
       <SettingsModal

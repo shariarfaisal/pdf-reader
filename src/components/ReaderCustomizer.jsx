@@ -115,19 +115,19 @@ export function FontSizeStepper({ settings, updateSetting, className = '' }) {
   };
 
   return (
-    <div className={`flex items-center bg-obsidian-950/80 rounded-lg border border-obsidian-800 p-0.5 ${className}`}>
+    <div className={`flex items-center bg-obsidian-750 rounded-lg border border-obsidian-700/80 p-0.5 ${className}`}>
       <button
         type="button"
         onClick={() => stepFontSize(-1)}
         title="Decrease font size ([)"
         aria-label="Decrease font size"
         disabled={settings.fontSize <= 13}
-        className="h-6 px-1.5 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-obsidian-800 transition"
+        className="h-7 min-w-[28px] px-1.5 text-xs font-semibold text-slate-300 hover:text-slate-100 disabled:opacity-30 rounded hover:bg-obsidian-700 transition cursor-pointer"
       >
         A-
       </button>
       <span
-        className="px-1.5 text-[11px] font-mono text-slate-300 tabular-nums min-w-[28px] text-center cursor-pointer hover:text-brand-300"
+        className="px-1.5 text-[11px] font-mono text-slate-300 tabular-nums min-w-[34px] text-center cursor-pointer hover:text-brand-300"
         title="Reset font size to 18px"
         onClick={() => updateSetting('fontSize', 18)}
       >
@@ -139,7 +139,7 @@ export function FontSizeStepper({ settings, updateSetting, className = '' }) {
         title="Increase font size (])"
         aria-label="Increase font size"
         disabled={settings.fontSize >= 32}
-        className="h-6 px-1.5 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-obsidian-800 transition"
+        className="h-7 min-w-[28px] px-1.5 text-xs font-semibold text-slate-300 hover:text-slate-100 disabled:opacity-30 rounded hover:bg-obsidian-700 transition cursor-pointer"
       >
         A+
       </button>
@@ -151,7 +151,7 @@ export function FontSizeStepper({ settings, updateSetting, className = '' }) {
  * Clean, single-button Appearance menu for the global header.
  * Opens an organized popover containing themes, layout modes, font, and density.
  */
-export function ReaderCustomizer({ settings, updateSetting, onReset }) {
+export function ReaderCustomizer({ settings, updateSetting, onReset, iconOnly = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef(null);
 
@@ -179,22 +179,27 @@ export function ReaderCustomizer({ settings, updateSetting, onReset }) {
     <div className="relative inline-flex" ref={popoverRef}>
       <Button
         variant={isOpen ? 'secondary' : 'ghost'}
-        size="sm"
-        icon={Sliders}
-        title="Display & Reading Appearance (T)"
+        size={iconOnly ? 'icon-sm' : 'sm'}
+        icon={iconOnly ? Palette : Sliders}
+        title="Appearance & styling — font, layout, theme (T)"
+        aria-label="Appearance settings"
         aria-expanded={isOpen}
         onClick={() => setIsOpen((prev) => !prev)}
-        className="gap-1.5 flex-shrink-0"
+        className={iconOnly ? 'flex-shrink-0' : 'gap-1.5 flex-shrink-0'}
       >
-        <span>Appearance</span>
-        <span
-          className="w-2.5 h-2.5 rounded-full border border-slate-600 flex-shrink-0"
-          style={{ backgroundColor: activeTheme.color }}
-          title={`Active theme: ${activeTheme.label}`}
-        />
-        <ChevronDown
-          className={`w-3.5 h-3.5 transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`}
-        />
+        {!iconOnly && (
+          <>
+            <span>Appearance</span>
+            <span
+              className="w-2.5 h-2.5 rounded-full border border-slate-600 flex-shrink-0"
+              style={{ backgroundColor: activeTheme.color }}
+              title={`Active theme: ${activeTheme.label}`}
+            />
+            <ChevronDown
+              className={`w-3.5 h-3.5 transition-transform duration-150 ${isOpen ? 'rotate-180' : ''}`}
+            />
+          </>
+        )}
       </Button>
 
       {isOpen && (
@@ -231,7 +236,7 @@ export function ReaderCustomizer({ settings, updateSetting, onReset }) {
                   className={`flex flex-col items-center gap-1 p-1.5 rounded-xl border text-center transition ${
                     settings.theme === th.id
                       ? 'border-brand-400 bg-brand-500/10 text-brand-300 font-medium'
-                      : 'border-obsidian-750 bg-obsidian-950/70 text-slate-400 hover:text-white hover:border-slate-600'
+                      : 'border-obsidian-750 bg-obsidian-950/70 text-slate-400 hover:text-slate-100 hover:border-slate-600'
                   }`}
                 >
                   <span
@@ -276,7 +281,7 @@ export function ReaderCustomizer({ settings, updateSetting, onReset }) {
                   className={`py-1 text-xs rounded-lg border transition ${
                     settings.lineHeight === lh.id
                       ? 'bg-brand-500/10 text-brand-300 border-brand-500/40 font-medium'
-                      : 'border-obsidian-700 text-slate-400 hover:text-white hover:bg-obsidian-800'
+                      : 'border-obsidian-700 text-slate-400 hover:text-slate-100 hover:bg-obsidian-800'
                   }`}
                 >
                   {lh.label.split(' ')[0]}
@@ -369,7 +374,7 @@ export function CanvasZoomToolbar({
   };
 
   return (
-    <div className="flex items-center bg-obsidian-950/80 border border-obsidian-800 rounded-lg p-0.5 gap-0.5">
+    <div className="flex items-center bg-obsidian-750 border border-obsidian-700/80 rounded-lg p-0.5 gap-0.5">
       <Button
         variant="ghost"
         size="icon-xs"
@@ -380,7 +385,7 @@ export function CanvasZoomToolbar({
         onClick={() => stepZoom(-15)}
       />
       <span
-        className="text-[11px] font-mono text-slate-300 min-w-[32px] text-center tabular-nums cursor-pointer hover:text-brand-300"
+        className="text-[11px] font-mono text-slate-300 min-w-[36px] text-center tabular-nums cursor-pointer hover:text-brand-300"
         title="Reset zoom to 100%"
         onClick={onReset}
       >
@@ -395,15 +400,15 @@ export function CanvasZoomToolbar({
         disabled={zoom >= 250}
         onClick={() => stepZoom(15)}
       />
-      <div className="w-px h-3 bg-obsidian-800 mx-0.5" />
+      <div className="w-px h-3.5 bg-obsidian-700 mx-0.5" />
       <button
         type="button"
         onClick={() => {
           setFitMode('width');
           setZoom(100);
         }}
-        className={`px-1.5 h-6 text-[10.5px] font-medium rounded transition ${
-          fitMode === 'width' ? 'bg-obsidian-800 text-brand-300' : 'text-slate-400 hover:text-white'
+        className={`px-2 h-7 min-w-[28px] text-[11px] font-medium rounded transition cursor-pointer ${
+          fitMode === 'width' ? 'bg-obsidian-800 text-indigo-400 dark:text-indigo-300' : 'text-slate-300 hover:text-slate-100'
         }`}
         title="Fit Image to Width"
       >
@@ -412,7 +417,7 @@ export function CanvasZoomToolbar({
       <button
         type="button"
         onClick={onReset}
-        className="px-1.5 h-6 text-[10.5px] font-medium rounded text-slate-400 hover:text-white transition"
+        className="px-2 h-7 min-w-[28px] text-[11px] font-medium rounded text-slate-300 hover:text-slate-100 hover:bg-obsidian-700 transition cursor-pointer"
         title="Reset Zoom to 100%"
       >
         1:1

@@ -13,6 +13,9 @@ import { remoteColab } from './remote/colab.js';
 import { modelManager } from './models.js';
 import { PRICING } from './usage.js';
 import { synthesizeAudio } from './tts.js';
+import { ensureLocalAudio, deleteRemoteAudio, projectSyncStatus, startProjectSync, freeVerifiedLocal } from './audioStore.js';
+import { driveStatus, startDriveAuth, finishDriveAuth, disconnectDrive } from './drive.js';
+import { generateShareToken, shareOnlyGate, lanAddresses, pagesWithAudio, LISTEN_PAGE } from './share.js';
 import {
   BUILTIN_VOICE,
   PREVIEW_TEXT,
@@ -92,11 +95,19 @@ app.get('/api/projects', (req, res) => {
   const projects = queries.getAllProjects();
   const enhanced = projects.map(p => {
     const pages = queries.getPagesByProjectId(p.id);
-    const readyPages = pages.filter(pg => pg.status === 'ready').length;
+    const audioPages = pages.filter(pg => Boolean(pg.audio_path) || pg.status === 'ready');
+    const readyPages = audioPages.length;
+    const totalAudioDuration = audioPages.reduce((sum, pg) => sum + (Number(pg.audio_duration) || 0), 0);
+    const firstAudioPage = audioPages.length > 0 ? audioPages[0].page_number : null;
+    const liveState = pipeline.getProjectState(p.id);
     return {
       ...p,
       readyPages,
-      percent: p.page_count > 0 ? Math.round((readyPages / p.page_count) * 100) : 0
+      totalAudioDuration,
+      firstAudioPage,
+      percent: p.page_count > 0 ? Math.round((readyPages / p.page_count) * 100) : 0,
+      pipelineStages: liveState.stages,
+      activeRuns: liveState.activeRuns
     };
   });
   res.json({ projects: enhanced });
@@ -148,28 +159,48 @@ app.post('/api/projects', upload.single('pdf'), async (req, res) => {
       });
     }
 
-    pipeline.log('info', `Created project "${projectName}" with ${info.pageCount} pages.`);
+    pipeline.log('info', `Created project "${projectName}" with ${info.pageCount} pages.`, null, projectId);
     res.json({ project });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get project details + all page rows
+// Get project details + all page rows + project-scoped pipeline state
 app.get('/api/projects/:id', (req, res) => {
   const project = queries.getProjectById(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
   const pages = queries.getPagesByProjectId(req.params.id);
-  res.json({ project, pages });
+  const pipelineState = pipeline.getProjectState(req.params.id);
+  res.json({ project, pages, pipeline: pipelineState });
+});
+
+// Rename a project (title is editable inline in the UI)
+app.patch('/api/projects/:id', (req, res) => {
+  const { id } = req.params;
+  const project = queries.getProjectById(id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!name) return res.status(400).json({ error: 'Title cannot be empty.' });
+  if (name.length > 200) return res.status(400).json({ error: 'Title must be 200 characters or fewer.' });
+
+  const updated = queries.updateProjectName(id, name);
+  pipeline.log('info', `Renamed project to "${name}".`, null, id);
+  res.json({ project: updated });
 });
 
 // Delete project
-app.delete('/api/projects/:id', (req, res) => {  const id = req.params.id;
-  if (pipeline.activeProjectId === id) {
+app.delete('/api/projects/:id', (req, res) => {
+  const id = req.params.id;
+  if (pipeline.isProjectRunning(id) || pipeline.isProjectInFlight(id)) {
     pipeline.stop(id);
   }
+  pipeline.runners?.delete(id);
+  const driveIds = queries.getPagesByProjectId(id).map((page) => page.audio_drive_id).filter(Boolean);
   queries.deleteProject(id);
+  removeRemoteAudioInBackground(driveIds);
 
   // Remove project folder on disk
   const projectDir = path.resolve(DATA_DIR, 'projects', id);
@@ -186,10 +217,9 @@ app.delete('/api/projects/:id', (req, res) => {  const id = req.params.id;
 
 /** Stop any in-flight job for this project before page rows are re-indexed. */
 async function haltPipelineForPageEdit(projectId) {
-  if (pipeline.activeProjectId !== projectId) return;
-  if (!pipeline.isRunning && !pipeline.loopInFlight) return;
+  if (!pipeline.isProjectRunning(projectId) && !pipeline.isProjectInFlight(projectId)) return;
   pipeline.stop(projectId);
-  await waitForPipelineIdle();
+  await waitForPipelineIdle(8000, projectId);
 }
 
 /** Resolve the rendered page image on disk (DB path first, then id/canonical names). */
@@ -203,8 +233,20 @@ function resolvePageImage(projectId, pageNum) {
   return candidates.find((f) => fs.existsSync(f)) || null;
 }
 
+/** Delete Drive audio copies in the background. Failures are logged; they never block the caller. */
+function removeRemoteAudioInBackground(driveIds) {
+  if (driveIds.length === 0) return;
+  deleteRemoteAudio(driveIds).then((failures) => {
+    for (const failure of failures) console.warn(`[Drive] Could not delete audio copy ${failure}`);
+  });
+}
+
 /** Remove the on-disk artifacts that belong to a single page row. */
 function deletePageArtifacts(page) {
+  if (page?.audio_drive_id) {
+    removeRemoteAudioInBackground([page.audio_drive_id]);
+    queries.setPageAudioDriveId(page.project_id, page.page_number, null);
+  }
   const files = [page?.render_path, page?.audio_path];
   if (page && page.source_page !== null && page.source_page !== undefined) {
     files.push(
@@ -232,10 +274,24 @@ const previewQueue = [];
 const previewInFlight = new Map();
 let previewRendering = false;
 
-function previewPathFor(page) {
+// Sidebar rows are 40×56 px; rendering a full page raster for each of them cost
+// ~280 KB per row and saturated the preview queue on long books.
+const THUMB_SCALE = 0.45;
+
+function previewDirFor(page) {
   const dir = path.resolve(DATA_DIR, 'projects', page.project_id, 'previews');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function previewPathFor(page) {
+  const dir = previewDirFor(page);
   return path.join(dir, `page_${page.source_page ?? page.page_number}.jpg`);
+}
+
+function thumbPathFor(page) {
+  const dir = previewDirFor(page);
+  return path.join(dir, `thumb_${page.source_page ?? page.page_number}.jpg`);
 }
 
 function drainPreviewQueue() {
@@ -244,7 +300,7 @@ function drainPreviewQueue() {
   if (!task) return;
 
   previewRendering = true;
-  renderPdfPage(task.pdfPath, task.pageIndex, task.outPath, 1.4)
+  renderPdfPage(task.pdfPath, task.pageIndex, task.outPath, task.scale)
     .then(() => task.resolve(task.outPath))
     .catch((err) => task.reject(err))
     .finally(() => {
@@ -253,8 +309,8 @@ function drainPreviewQueue() {
     });
 }
 
-function renderPagePreview({ project, page }) {
-  const outPath = previewPathFor(page);
+function renderPagePreview({ project, page, thumb = false }) {
+  const outPath = thumb ? thumbPathFor(page) : previewPathFor(page);
   if (fs.existsSync(outPath)) return Promise.resolve(outPath);
   if (previewInFlight.has(outPath)) return previewInFlight.get(outPath);
 
@@ -263,7 +319,14 @@ function renderPagePreview({ project, page }) {
     : page.page_number;
 
   const task = new Promise((resolve, reject) => {
-    previewQueue.push({ pdfPath: project.pdf_path, pageIndex: pdfPageIndex, outPath, resolve, reject });
+    previewQueue.push({
+      pdfPath: project.pdf_path,
+      pageIndex: pdfPageIndex,
+      outPath,
+      scale: thumb ? THUMB_SCALE : 1.4,
+      resolve,
+      reject
+    });
     drainPreviewQueue();
   });
 
@@ -288,6 +351,14 @@ app.get('/api/projects/:id/pages/:pageNum/preview', async (req, res) => {
   }
 
   try {
+    // Sidebar thumbnails ask for `?thumb=1`: a tiny JPEG, never the full raster.
+    if (req.query.thumb !== undefined) {
+      const thumb = await renderPagePreview({ project, page, thumb: true });
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.sendFile(thumb);
+    }
+
     // Reuse the crisp pipeline raster if this page was already processed.
     const rendered = resolvePageImage(projectId, pageNum);
     const file = rendered || (await renderPagePreview({ project, page }));
@@ -340,7 +411,9 @@ app.post('/api/projects/:id/pages', async (req, res) => {
     const page = queries.insertCustomPage({ projectId, position, text });
     pipeline.log(
       'info',
-      `Custom text page inserted at position ${position + 1} of "${project.name}" (no OCR needed).`
+      `Custom text page inserted at position ${position + 1} of "${project.name}" (no OCR needed).`,
+      null,
+      projectId
     );
     res.json({
       success: true,
@@ -349,7 +422,7 @@ app.post('/api/projects/:id/pages', async (req, res) => {
       project: queries.getProjectById(projectId)
     });
   } catch (err) {
-    pipeline.log('error', `Insert custom page failed: ${err.message}`);
+    pipeline.log('error', `Insert custom page failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -381,7 +454,7 @@ app.patch('/api/projects/:id/pages/:pageNum', async (req, res) => {
         if (!legacyText) return res.status(400).json({ error: 'Custom page text cannot be empty.' });
         deletePageArtifacts(existing);
         updatedPage = queries.updateCustomPageText(projectId, pageNum, legacyText);
-        pipeline.log('info', `Custom text page ${pageNum + 1} updated — audio will be re-synthesized.`);
+        pipeline.log('info', `Custom text page ${pageNum + 1} updated — audio will be re-synthesized.`, null, projectId);
       } else {
         // For standard PDF pages, default legacy { text } to refined_text
         clearAudioFiles(projectId, [pageNum]);
@@ -389,7 +462,7 @@ app.patch('/api/projects/:id/pages/:pageNum', async (req, res) => {
           refinedText: legacyText,
           clearAudio: true
         });
-        pipeline.log('info', `Page ${pageNum + 1} narration script updated.`);
+        pipeline.log('info', `Page ${pageNum + 1} narration script updated.`, null, projectId);
       }
     } else {
       const rawText = req.body?.rawText !== undefined ? String(req.body.rawText) : (req.body?.raw_text !== undefined ? String(req.body.raw_text) : undefined);
@@ -407,7 +480,7 @@ app.patch('/api/projects/:id/pages/:pageNum', async (req, res) => {
         clearAudio,
         clearRefined
       });
-      pipeline.log('info', `Page ${pageNum + 1} text updated manually.`);
+      pipeline.log('info', `Page ${pageNum + 1} text updated manually.`, null, projectId);
     }
 
     if (updatedPage) {
@@ -421,7 +494,7 @@ app.patch('/api/projects/:id/pages/:pageNum', async (req, res) => {
       project: queries.getProjectById(projectId)
     });
   } catch (err) {
-    pipeline.log('error', `Update page text failed: ${err.message}`);
+    pipeline.log('error', `Update page text failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -446,7 +519,9 @@ app.delete('/api/projects/:id/pages/:pageNum', async (req, res) => {
     queries.deletePageAt(projectId, pageNum);
     pipeline.log(
       'info',
-      `Page ${pageNum + 1} (${existing.page_type === 'custom' ? 'custom text' : 'PDF'}) removed from "${project.name}".`
+      `Page ${pageNum + 1} (${existing.page_type === 'custom' ? 'custom text' : 'PDF'}) removed from "${project.name}".`,
+      null,
+      projectId
     );
     res.json({
       success: true,
@@ -455,7 +530,7 @@ app.delete('/api/projects/:id/pages/:pageNum', async (req, res) => {
       project: queries.getProjectById(projectId)
     });
   } catch (err) {
-    pipeline.log('error', `Delete page failed: ${err.message}`);
+    pipeline.log('error', `Delete page failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -498,7 +573,9 @@ app.delete('/api/projects/:id/pages', async (req, res) => {
       'info',
       `${removed.length} page${removed.length === 1 ? '' : 's'} removed from "${project.name}" (positions ${removed
         .map((page) => page.page_number + 1)
-        .join(', ')}).`
+        .join(', ')}).`,
+      null,
+      projectId
     );
 
     res.json({
@@ -509,7 +586,7 @@ app.delete('/api/projects/:id/pages', async (req, res) => {
       project: queries.getProjectById(projectId)
     });
   } catch (err) {
-    pipeline.log('error', `Bulk delete failed: ${err.message}`);
+    pipeline.log('error', `Bulk delete failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -739,14 +816,25 @@ app.post('/api/projects/:id/stop', (req, res) => {
   res.json({ success: true, message: 'Pipeline stopped' });
 });
 
-// Live per-stage state (the SSE stream also pushes `stage_status` events).
+// Live per-stage state for this specific project (the SSE stream also pushes `stage_status` events).
 app.get('/api/projects/:id/stages', (req, res) => {
+  const state = pipeline.getProjectState(req.params.id);
   res.json({
     success: true,
-    activeProjectId: pipeline.activeProjectId,
-    loopInFlight: pipeline.loopInFlight,
-    stages: { ...pipeline.stageStates }
+    activeProjectId: state.projectId,
+    loopInFlight: state.loopInFlight,
+    isRunning: state.isRunning,
+    isPaused: state.isPaused,
+    stages: state.stages,
+    activeRuns: state.activeRuns,
+    logs: state.logs
   });
+});
+
+// Clear stored pipeline logs for a specific project
+app.delete('/api/projects/:id/logs', (req, res) => {
+  pipeline.clearProjectLogs(req.params.id);
+  res.json({ success: true });
 });
 
 // ==========================================
@@ -819,7 +907,9 @@ app.post('/api/projects/:id/rules', (req, res) => {
   });
   pipeline.log(
     'info',
-    `Replacement rule added (${pageNumber === null ? 'project' : `page ${pageNumber + 1}`}): "${find.slice(0, 40)}" → "${(replace ?? '').slice(0, 40)}".`
+    `Replacement rule added (${pageNumber === null ? 'project' : `page ${pageNumber + 1}`}): "${find.slice(0, 40)}" → "${(replace ?? '').slice(0, 40)}".`,
+    null,
+    project.id
   );
   res.status(201).json({ success: true, rule, rules: queries.listTextRules(project.id) });
 });
@@ -874,11 +964,13 @@ app.post('/api/projects/:id/rules/apply', (req, res) => {
     const result = pipeline.applyRulesToProject(project.id, { pageNumbers });
     pipeline.log(
       'info',
-      `Text rules applied: ${result.changed} script${result.changed === 1 ? '' : 's'} rewritten${result.audioCleared ? `, ${result.audioCleared} audio file(s) cleared for re-synthesis` : ''}.`
+      `Text rules applied: ${result.changed} script${result.changed === 1 ? '' : 's'} rewritten${result.audioCleared ? `, ${result.audioCleared} audio file(s) cleared for re-synthesis` : ''}.`,
+      null,
+      project.id
     );
     res.json({ success: true, ...result, pages: queries.getPagesByProjectId(project.id) });
   } catch (err) {
-    pipeline.log('error', `Applying text rules failed: ${err.message}`);
+    pipeline.log('error', `Applying text rules failed: ${err.message}`, null, project.id);
     res.status(500).json({ error: err.message });
   }
 });
@@ -889,6 +981,21 @@ app.post('/api/projects/:id/rules/apply', (req, res) => {
 
 /** Remove synthesized audio files so the pipeline re-synthesizes them. */
 function clearAudioFiles(projectId, pageNumbers = null) {
+  // Page rows store their own audio filename (id-based for new rows, legacy
+  // page_<n>.wav for old ones), so resolve them from the DB. Never guess a
+  // filename from the display position — positions shift when pages are edited.
+  const pages = pageNumbers
+    ? pageNumbers.map((n) => queries.getPage(projectId, n)).filter(Boolean)
+    : queries.getPagesByProjectId(projectId);
+
+  const staleDriveIds = [];
+  for (const page of pages) {
+    if (!page.audio_drive_id) continue;
+    staleDriveIds.push(page.audio_drive_id);
+    queries.setPageAudioDriveId(projectId, page.page_number, null);
+  }
+  removeRemoteAudioInBackground(staleDriveIds);
+
   const audioDir = path.resolve(DATA_DIR, 'projects', projectId, 'audio');
   if (!fs.existsSync(audioDir)) return;
 
@@ -898,12 +1005,6 @@ function clearAudioFiles(projectId, pageNumbers = null) {
     for (const file of fs.readdirSync(audioDir)) targets.add(path.join(audioDir, file));
   }
 
-  // Page rows store their own audio filename (id-based for new rows, legacy
-  // page_<n>.wav for old ones), so resolve them from the DB. Never guess a
-  // filename from the display position — positions shift when pages are edited.
-  const pages = pageNumbers
-    ? pageNumbers.map((n) => queries.getPage(projectId, n)).filter(Boolean)
-    : queries.getPagesByProjectId(projectId);
   for (const page of pages) {
     if (page.audio_path) targets.add(page.audio_path);
   }
@@ -917,13 +1018,9 @@ function clearAudioFiles(projectId, pageNumbers = null) {
   }
 }
 
-/** Wait (briefly) for any in-flight pipeline loop to release the engine. */
-async function waitForPipelineIdle(timeoutMs = 8000) {
-  const started = Date.now();
-  while (pipeline.loopInFlight && Date.now() - started < timeoutMs) {
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return !pipeline.loopInFlight;
+/** Wait (briefly) for any in-flight pipeline loop on a project (or globally) to release. */
+async function waitForPipelineIdle(timeoutMs = 8000, projectId = null) {
+  return pipeline.waitForLoopIdle(timeoutMs, projectId);
 }
 
 // Regenerate one page: 'audio' (audio only), 'narration' / 'refine' (refine + audio), 'ocr' (OCR only), or 'full' (OCR + refine + audio)
@@ -942,36 +1039,36 @@ app.post('/api/projects/:id/pages/:pageNum/regenerate', async (req, res) => {
   }
 
   try {
-    if (pipeline.activeProjectId === projectId && (pipeline.isRunning || pipeline.loopInFlight)) {
+    if (pipeline.isProjectRunning(projectId) || pipeline.isProjectInFlight(projectId)) {
       pipeline.stop(projectId);
-      await waitForPipelineIdle();
+      await waitForPipelineIdle(8000, projectId);
     }
 
     if (mode === 'audio') {
       queries.resetPageStages(projectId, pageNum, { audioOnly: true });
       clearAudioFiles(projectId, [pageNum]);
-      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Audio only) — cache cleared.`);
+      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Audio only) — cache cleared.`, null, projectId);
       if (autoStart) await pipeline.step(projectId, pageNum, { stage: 'audio' });
     } else if (mode === 'ocr') {
       queries.resetPageStages(projectId, pageNum, { ocrOnly: true });
       clearAudioFiles(projectId, [pageNum]);
-      pipeline.log('info', `Regenerate Page ${pageNum + 1} (OCR extraction only) — cache cleared.`);
+      pipeline.log('info', `Regenerate Page ${pageNum + 1} (OCR extraction only) — cache cleared.`, null, projectId);
       if (autoStart) await pipeline.step(projectId, pageNum, { stage: 'ocr' });
     } else if (mode === 'refine' || mode === 'narration') {
       queries.resetPageStages(projectId, pageNum, { includeRaw: false });
       clearAudioFiles(projectId, [pageNum]);
-      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Narration + Audio) — cache cleared.`);
+      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Narration + Audio) — cache cleared.`, null, projectId);
       if (autoStart) await pipeline.step(projectId, pageNum, { stage: 'all' });
     } else {
       queries.resetPageStages(projectId, pageNum, { includeRaw: true });
       clearAudioFiles(projectId, [pageNum]);
-      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Full: OCR + Narration + Audio) — cache cleared.`);
+      pipeline.log('info', `Regenerate Page ${pageNum + 1} (Full: OCR + Narration + Audio) — cache cleared.`, null, projectId);
       if (autoStart) await pipeline.step(projectId, pageNum, { stage: 'all' });
     }
 
     res.json({ success: true, scope: 'page', pageNumber: pageNum, mode, started: autoStart });
   } catch (err) {
-    pipeline.log('error', `Regenerate page failed: ${err.message}`);
+    pipeline.log('error', `Regenerate page failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -989,36 +1086,36 @@ app.post('/api/projects/:id/regenerate', async (req, res) => {
   }
 
   try {
-    if (pipeline.activeProjectId === projectId && (pipeline.isRunning || pipeline.loopInFlight)) {
+    if (pipeline.isProjectRunning(projectId) || pipeline.isProjectInFlight(projectId)) {
       pipeline.stop(projectId);
-      await waitForPipelineIdle();
+      await waitForPipelineIdle(8000, projectId);
     }
 
     if (mode === 'audio') {
       queries.resetProjectStages(projectId, { audioOnly: true });
       clearAudioFiles(projectId);
-      pipeline.log('info', `Regenerate Book "${project.name}" (Audio only) — all audio caches cleared.`);
+      pipeline.log('info', `Regenerate Book "${project.name}" (Audio only) — all audio caches cleared.`, null, projectId);
       if (autoStart) await pipeline.start(projectId, { stage: 'audio' });
     } else if (mode === 'ocr') {
       queries.resetProjectStages(projectId, { ocrOnly: true });
       clearAudioFiles(projectId);
-      pipeline.log('info', `Regenerate Book "${project.name}" (OCR extraction only) — all caches cleared.`);
+      pipeline.log('info', `Regenerate Book "${project.name}" (OCR extraction only) — all caches cleared.`, null, projectId);
       if (autoStart) await pipeline.start(projectId, { stage: 'ocr' });
     } else if (mode === 'refine' || mode === 'narration') {
       queries.resetProjectStages(projectId, { includeRaw: false });
       clearAudioFiles(projectId);
-      pipeline.log('info', `Regenerate Book "${project.name}" (Narration + Audio) — script & audio caches cleared.`);
+      pipeline.log('info', `Regenerate Book "${project.name}" (Narration + Audio) — script & audio caches cleared.`, null, projectId);
       if (autoStart) await pipeline.start(projectId, { stage: 'all' });
     } else {
       queries.resetProjectStages(projectId, { includeRaw: true });
       clearAudioFiles(projectId);
-      pipeline.log('info', `Regenerate Book "${project.name}" (Full: OCR + Narration + Audio) — all caches cleared.`);
+      pipeline.log('info', `Regenerate Book "${project.name}" (Full: OCR + Narration + Audio) — all caches cleared.`, null, projectId);
       if (autoStart) await pipeline.start(projectId, { stage: 'all' });
     }
 
     res.json({ success: true, scope: 'project', pageCount: project.page_count, mode, started: autoStart });
   } catch (err) {
-    pipeline.log('error', `Regenerate project failed: ${err.message}`);
+    pipeline.log('error', `Regenerate project failed: ${err.message}`, null, projectId);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1027,10 +1124,17 @@ app.post('/api/projects/:id/regenerate', async (req, res) => {
 // Audio Download API
 // ==========================================
 
-/** Resolve the audio file on disk for a page (DB path first, then canonical path). */
-function resolvePageAudio(projectId, pageNum) {
+/**
+ * Resolve the audio file on disk for a page (DB path first, then canonical path).
+ * A page whose local copy was evicted is re-downloaded from Drive. Throws when
+ * that download fails.
+ */
+async function resolvePageAudio(projectId, pageNum) {
   const page = queries.getPage(projectId, pageNum);
-  if (page?.audio_path && fs.existsSync(page.audio_path)) return page.audio_path;
+  if (page?.audio_path) {
+    const local = await ensureLocalAudio(page);
+    if (local) return local;
+  }
   const fallback = path.join(DATA_DIR, 'projects', projectId, 'audio', `page_${pageNum}.wav`);
   return fs.existsSync(fallback) ? fallback : null;
 }
@@ -1042,19 +1146,37 @@ function safeFileName(name, fallback = 'audio') {
 }
 
 // Stream a page's narration audio (inline for the player, attachment for download)
-app.get('/api/projects/:id/pages/:pageNum/audio', (req, res) => {
-  const projectId = req.params.id;
+app.get('/api/projects/:id/pages/:pageNum/audio', async (req, res) => {
   const pageNum = parseInt(req.params.pageNum, 10);
   if (!Number.isInteger(pageNum) || pageNum < 0) {
     return res.status(400).json({ error: 'Invalid page number' });
   }
+  const inline = req.query.inline === '1' || req.query.inline === 'true';
+  return sendPageAudio(req, res, req.params.id, pageNum, inline);
+});
 
-  const audioFile = resolvePageAudio(projectId, pageNum);
+// Read-only listen link: audio is always inline and the token must belong to the project.
+app.get('/api/shared/:token/pages/:pageNum/audio', async (req, res) => {
+  const project = queries.getProjectByShareToken(req.params.token);
+  if (!project) return res.status(404).json({ error: 'Listen link not found' });
+  const pageNum = parseInt(req.params.pageNum, 10);
+  if (!Number.isInteger(pageNum) || pageNum < 0) {
+    return res.status(400).json({ error: 'Invalid page number' });
+  }
+  return sendPageAudio(req, res, project.id, pageNum, true);
+});
+
+async function sendPageAudio(req, res, projectId, pageNum, inline) {
+  let audioFile;
+  try {
+    audioFile = await resolvePageAudio(projectId, pageNum);
+  } catch (err) {
+    return res.status(502).json({ error: `Could not load page ${pageNum + 1} audio from Google Drive: ${err.message}` });
+  }
   if (!audioFile) {
     return res.status(404).json({ error: `No audio synthesized yet for page ${pageNum + 1}` });
   }
 
-  const inline = req.query.inline === '1' || req.query.inline === 'true';
   const stat = fs.statSync(audioFile);
   res.setHeader('Content-Type', 'audio/wav');
   // Byte ranges let the player scrub, resume mid-page, and jump to the sentence
@@ -1108,10 +1230,10 @@ app.get('/api/projects/:id/pages/:pageNum/audio', (req, res) => {
   });
   req.on('close', () => stream.destroy());
   stream.pipe(res);
-});
+}
 
 // Download every synthesized page audio as a single .tar.gz archive
-app.get('/api/projects/:id/audio-archive', (req, res) => {
+app.get('/api/projects/:id/audio-archive', async (req, res) => {
   const projectId = req.params.id;
   const project = queries.getProjectById(projectId);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -1120,12 +1242,15 @@ app.get('/api/projects/:id/audio-archive', (req, res) => {
   // are reflected in the archive no matter what the file names look like.
   const pages = queries.getPagesByProjectId(projectId);
   const entries = [];
-  for (const page of pages) {
-    const file = resolvePageAudio(projectId, page.page_number);
-    if (!file) continue;
-    entries.push({ file, name: `Page_${String(page.page_number + 1).padStart(4, '0')}.wav` });
+  try {
+    for (const page of pages) {
+      const file = await resolvePageAudio(projectId, page.page_number);
+      if (!file) continue;
+      entries.push({ file, name: `Page_${String(page.page_number + 1).padStart(4, '0')}.wav` });
+    }
+  } catch (err) {
+    return res.status(502).json({ error: `Could not load audio from Google Drive: ${err.message}` });
   }
-
   if (entries.length === 0) {
     return res.status(404).json({ error: 'No audio synthesized for this project yet' });
   }
@@ -1173,6 +1298,85 @@ app.get('/api/projects/:id/audio-archive', (req, res) => {
   req.on('close', () => tar.kill('SIGTERM'));
   tar.stdout.pipe(res);
 });
+
+// Single merged MP3 audiobook stream/download across all synthesized pages
+app.get('/api/projects/:id/audio-full', async (req, res) => {
+  const project = queries.getProjectById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  return sendFullAudio(req, res, project);
+});
+
+// Read-only listen link: the same merged MP3, token must belong to the project.
+app.get('/api/shared/:token/audio-full', async (req, res) => {
+  const project = queries.getProjectByShareToken(req.params.token);
+  if (!project) return res.status(404).json({ error: 'Listen link not found' });
+  return sendFullAudio(req, res, project);
+});
+
+async function sendFullAudio(req, res, project) {
+  const projectId = project.id;
+  const pages = queries.getPagesByProjectId(projectId);
+  const audioFiles = [];
+  try {
+    for (const page of pages) {
+      const file = await resolvePageAudio(projectId, page.page_number);
+      if (file) audioFiles.push(file);
+    }
+  } catch (err) {
+    return res.status(502).json({ error: `Could not load audio from Google Drive: ${err.message}` });
+  }
+
+  if (audioFiles.length === 0) {
+    return res.status(404).json({ error: 'No audio synthesized for this project yet' });
+  }
+
+  const tmpList = path.join(os.tmpdir(), `pdf-concat-${projectId}-${Date.now()}.txt`);
+  const cleanup = () => {
+    try {
+      if (fs.existsSync(tmpList)) fs.unlinkSync(tmpList);
+    } catch {}
+  };
+
+  try {
+    const lines = audioFiles.map((f) => `file '${f.replace(/'/g, "'\\''")}'`);
+    fs.writeFileSync(tmpList, lines.join('\n'));
+  } catch (err) {
+    cleanup();
+    return res.status(500).json({ error: `Could not stage concat list: ${err.message}` });
+  }
+
+  const fullAudioName = `${safeFileName(project.name, 'audiobook')}.mp3`;
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${fullAudioName.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(fullAudioName)}`
+  );
+
+  const ffmpeg = spawn(
+    'ffmpeg',
+    ['-f', 'concat', '-safe', '0', '-i', tmpList, '-c:a', 'libmp3lame', '-q:a', '3', '-f', 'mp3', 'pipe:1'],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  let ffErr = '';
+  ffmpeg.stderr.on('data', (chunk) => {
+    ffErr += chunk.toString();
+  });
+  ffmpeg.on('error', (err) => {
+    cleanup();
+    if (!res.headersSent) res.status(500).json({ error: `ffmpeg failed: ${err.message}` });
+    else res.destroy();
+  });
+  ffmpeg.on('close', (code) => {
+    if (code !== 0) console.error(`[Full Audio MP3] ffmpeg exited ${code}: ${ffErr}`);
+    cleanup();
+  });
+  req.on('close', () => {
+    ffmpeg.kill('SIGTERM');
+    cleanup();
+  });
+  ffmpeg.stdout.pipe(res);
+}
 
 // ==========================================
 // API Usage & Call Logs
@@ -1331,6 +1535,102 @@ app.post('/api/settings', (req, res) => {
 });
 
 // ==========================================
+// Google Drive audio storage API
+// ==========================================
+app.get('/api/drive/status', (req, res) => {
+  res.json({ drive: driveStatus() });
+});
+
+app.post('/api/drive/auth/start', (req, res) => {
+  try {
+    res.json({ success: true, ...startDriveAuth(PORT) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Google redirects the user's browser here after consent.
+app.get('/api/drive/auth/callback', async (req, res) => {
+  const finish = (ok, title, message) => {
+    const safe = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    res
+      .status(ok ? 200 : 400)
+      .type('html')
+      .send(`<!doctype html><meta charset="utf-8"><title>${safe(title)}</title><body style="font-family:system-ui;padding:32px"><h2>${safe(title)}</h2><p>${safe(message)}</p></body>`);
+  };
+  if (req.query.error) {
+    return finish(false, 'Google Drive connection cancelled', String(req.query.error));
+  }
+  try {
+    await finishDriveAuth({
+      code: String(req.query.code || ''),
+      state: String(req.query.state || ''),
+      port: PORT
+    });
+    pipeline.log('info', 'Google Drive connected for audio storage.');
+    finish(true, 'Google Drive connected', 'You can close this tab and return to PDF Reader.');
+  } catch (error) {
+    pipeline.log('error', `Google Drive connection failed: ${error.message}`);
+    finish(false, 'Google Drive connection failed', error.message);
+  }
+});
+
+app.post('/api/drive/disconnect', async (req, res) => {
+  try {
+    await disconnectDrive();
+    pipeline.log('info', 'Google Drive disconnected. Existing Drive audio copies were left in Drive.');
+    res.json({ success: true, drive: driveStatus() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Sync status for every project that has narration audio.
+app.get('/api/drive/sync-status', (req, res) => {
+  const projects = queries
+    .getAllProjects()
+    .map((project) => ({ id: project.id, name: project.name, ...projectSyncStatus(project.id) }))
+    .filter((project) => project.total > 0);
+  res.json({ drive: driveStatus(), projects });
+});
+
+// Start background upload of every local page that lacks a Drive copy (all projects).
+app.post('/api/drive/sync-all', (req, res) => {
+  if (!driveStatus().connected) return res.status(400).json({ error: 'Connect Google Drive first.' });
+  const started = queries.getAllProjects().map((project) => startProjectSync(project.id));
+  pipeline.log('info', `Drive sync started for ${started.length} project(s).`);
+  res.json({ success: true, started: started.length });
+});
+
+// Start background upload for one project.
+app.post('/api/projects/:id/drive/sync', (req, res) => {
+  const projectId = req.params.id;
+  if (!queries.getProjectById(projectId)) return res.status(404).json({ error: 'Project not found' });
+  if (!driveStatus().connected) return res.status(400).json({ error: 'Connect Google Drive first.' });
+  const job = startProjectSync(projectId);
+  pipeline.log('info', `Drive sync started (${job.total} page(s) to upload).`, null, projectId);
+  res.json({ success: true, job });
+});
+
+// Check Drive copies and remove local audio for pages that verify (dryRun=1 only reports).
+app.post('/api/projects/:id/drive/free-local', async (req, res) => {
+  const projectId = req.params.id;
+  if (!queries.getProjectById(projectId)) return res.status(404).json({ error: 'Project not found' });
+  if (pipeline.isProjectRunning(projectId)) {
+    return res.status(409).json({ error: 'Pause or stop narration for this project before freeing local audio.' });
+  }
+  const dryRun = req.body?.dryRun === true || req.query.dryRun === '1';
+  try {
+    const result = await freeVerifiedLocal(projectId, { dryRun });
+    pipeline.log('info', `${dryRun ? 'Verified' : 'Freed'} ${result.verified}/${result.checked} local audio file(s) against Drive.`, null, projectId);
+    res.json({ success: true, dryRun, ...result });
+  } catch (error) {
+    pipeline.log('error', `Freeing local audio failed: ${error.message}`, null, projectId);
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// ==========================================
 // Voice library API (cloned voices)
 // ==========================================
 const audioUpload = multer({
@@ -1352,7 +1652,11 @@ app.get('/api/voices', (req, res) => {
     builtin: {
       id: BUILTIN_VOICE,
       name: 'Built-in reference voice',
-      description: 'Bundled Sirah sample — always available, no upload needed.'
+      description: 'Bundled Sirah sample — always available, no upload needed.',
+      audioUrl: '/api/voices/builtin/audio',
+      sampleUrl: '/api/voices/builtin/audio',
+      language: 'bn',
+      duration: 15.0
     },
     defaults: {
       bn: settings.tts_voice_bn || BUILTIN_VOICE,
@@ -1364,6 +1668,14 @@ app.get('/api/voices', (req, res) => {
 });
 
 app.get('/api/voices/:id/audio', (req, res) => {
+  if (req.params.id === BUILTIN_VOICE || req.params.id === 'builtin') {
+    const builtinAudio = path.resolve(process.cwd(), 'data/custom-audio.m4a');
+    if (fs.existsSync(builtinAudio)) {
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Content-Type', 'audio/mp4');
+      return res.sendFile(builtinAudio);
+    }
+  }
   const voice = queries.getVoiceById(req.params.id);
   if (!voice || !fs.existsSync(voice.audio_path)) {
     return res.status(404).json({ error: 'Voice sample not found' });
@@ -1584,6 +1896,64 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
+// ==========================================
+// Listen Links: read-only narration playback on other devices (e.g. iPhone on the same Wi-Fi)
+// ==========================================
+const SHARE_PORT = Number(process.env.SHARE_PORT || 4322);
+
+function listenInfo(token) {
+  if (!token) return { enabled: false, urls: [], localUrl: null };
+  return {
+    enabled: true,
+    localUrl: `http://localhost:${SHARE_PORT}/listen/${token}`,
+    urls: lanAddresses().map((ip) => `http://${ip}:${SHARE_PORT}/listen/${token}`)
+  };
+}
+
+app.get('/api/projects/:id/share', (req, res) => {
+  const project = queries.getProjectById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  res.json(listenInfo(project.share_token));
+});
+
+app.post('/api/projects/:id/share', (req, res) => {
+  const project = queries.getProjectById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const token = project.share_token || generateShareToken();
+  if (!project.share_token) queries.setProjectShareToken(project.id, token);
+  res.json(listenInfo(token));
+});
+
+// Revokes every existing link; POST again to issue a fresh one.
+app.delete('/api/projects/:id/share', (req, res) => {
+  const project = queries.getProjectById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  queries.setProjectShareToken(project.id, null);
+  res.json(listenInfo(null));
+});
+
+app.get('/listen/:token', (req, res) => {
+  if (!queries.getProjectByShareToken(req.params.token)) {
+    return res.status(404).type('text/plain').send('Listen link not found or revoked.');
+  }
+  res.sendFile(LISTEN_PAGE);
+});
+
+app.get('/api/shared/:token', (req, res) => {
+  const project = queries.getProjectByShareToken(req.params.token);
+  if (!project) return res.status(404).json({ error: 'Listen link not found' });
+  const pages = pagesWithAudio(queries.getPagesByProjectId(project.id), (pageNum) =>
+    fs.existsSync(path.join(DATA_DIR, 'projects', project.id, 'audio', `page_${pageNum}.wav`))
+  );
+  res.json({
+    name: project.name,
+    pages: pages.map((page) => ({
+      number: page.page_number + 1,
+      audioUrl: `/api/shared/${req.params.token}/pages/${page.page_number}/audio`
+    }))
+  });
+});
+
 // Serve frontend build if present
 const DIST_DIR = path.resolve(process.cwd(), 'dist');
 if (fs.existsSync(DIST_DIR)) {
@@ -1646,6 +2016,20 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-app.listen(PORT, () => {
+// Owner API stays on loopback; only the read-only share listener is LAN-facing.
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`[PDF Reader Server] Running on http://localhost:${PORT}`);
+});
+
+// LAN listener for listen links. Only the read-only share routes pass the gate,
+// so owner APIs stay off this port.
+const shareApp = express();
+shareApp.use(shareOnlyGate);
+shareApp.use(app);
+shareApp.listen(SHARE_PORT, '0.0.0.0', (err) => {
+  if (err) {
+    console.error(`[Listen Links] Share listener failed on port ${SHARE_PORT}: ${err.message}. Set SHARE_PORT to a free port.`);
+    return;
+  }
+  console.log(`[Listen Links] Share listener on port ${SHARE_PORT} (read-only, LAN)`);
 });

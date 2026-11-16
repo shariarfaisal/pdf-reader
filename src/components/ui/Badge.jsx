@@ -11,107 +11,83 @@ import {
 
 const STATUS_CONFIG = {
   pending: {
-    bg: 'bg-slate-800/80',
-    text: 'text-slate-400',
-    border: 'border-slate-700/80',
+    className: 'bg-obsidian-750 text-slate-400 border-obsidian-700/80',
     icon: Clock,
     label: 'Pending'
   },
   idle: {
-    bg: 'bg-slate-800/80',
-    text: 'text-slate-400',
-    border: 'border-slate-700/80',
+    className: 'bg-obsidian-750 text-slate-400 border-obsidian-700/80',
     icon: Clock,
     label: 'Idle'
   },
   extracting: {
-    bg: 'bg-blue-500/10',
-    text: 'text-blue-300',
-    border: 'border-blue-500/30',
+    className: 'status-pill-info border',
     icon: RefreshCw,
     spin: true,
     label: 'Extracting'
   },
   refining: {
-    bg: 'bg-purple-500/10',
-    text: 'text-purple-300',
-    border: 'border-purple-500/30',
+    className: 'status-pill-info border',
     icon: Sparkles,
     spin: true,
-    label: 'Refining'
+    label: 'Preparing narration'
   },
   synthesizing: {
-    bg: 'bg-amber-500/10',
-    text: 'text-amber-300',
-    border: 'border-amber-500/30',
+    className: 'status-pill-warning border',
     icon: Volume2,
     spin: true,
-    label: 'Synthesizing'
+    label: 'Generating audio'
   },
   ready: {
-    bg: 'bg-emerald-500/10',
-    text: 'text-emerald-300',
-    border: 'border-emerald-500/30',
+    className: 'status-pill-success border',
     icon: CheckCircle2,
-    label: 'Ready'
+    label: 'Audio ready'
   },
   completed: {
-    bg: 'bg-emerald-500/10',
-    text: 'text-emerald-300',
-    border: 'border-emerald-500/30',
+    className: 'status-pill-success border',
     icon: CheckCircle2,
     label: 'Completed'
   },
   running: {
-    bg: 'bg-sky-500/10',
-    text: 'text-sky-300',
-    border: 'border-sky-500/30',
+    className: 'status-pill-info border',
     icon: RefreshCw,
     spin: true,
     label: 'Running'
   },
   paused: {
-    bg: 'bg-amber-500/10',
-    text: 'text-amber-300',
-    border: 'border-amber-500/30',
+    className: 'status-pill-warning border',
     icon: Pause,
     label: 'Paused'
   },
   error: {
-    bg: 'bg-rose-500/10',
-    text: 'text-rose-300',
-    border: 'border-rose-500/30',
+    className: 'status-pill-error border',
     icon: AlertCircle,
-    label: 'Error'
+    label: 'Failed'
   }
 };
 
 const TONES = {
-  slate: 'bg-slate-800/80 text-slate-300 border-slate-700/80',
-  brand: 'bg-brand-500/10 text-brand-300 border-brand-500/30',
-  sky: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
-  emerald: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
-  amber: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
-  rose: 'bg-rose-500/10 text-rose-300 border-rose-500/30',
-  purple: 'bg-purple-500/10 text-purple-300 border-purple-500/30',
-  violet: 'bg-violet-500/10 text-violet-300 border-violet-500/30',
-  indigo: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+  slate: 'bg-obsidian-750 text-slate-300 border-obsidian-700/80',
+  brand: 'bg-indigo-500/10 text-indigo-400 dark:text-indigo-300 border-indigo-500/25',
+  info: 'status-pill-info border',
+  success: 'status-pill-success border',
+  warning: 'status-pill-warning border',
+  error: 'status-pill-error border',
+  selected: 'is-selected-token border border-indigo-400/40'
 };
 
 const DOT_COLORS = {
   slate: 'bg-slate-400',
-  brand: 'bg-brand-400',
-  sky: 'bg-sky-400',
-  emerald: 'bg-emerald-400',
-  amber: 'bg-amber-400',
-  rose: 'bg-rose-400',
-  purple: 'bg-purple-400',
-  violet: 'bg-violet-400',
-  indigo: 'bg-indigo-400'
+  brand: 'bg-indigo-500',
+  info: 'bg-blue-500',
+  success: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  error: 'bg-rose-500',
+  selected: 'bg-indigo-600 dark:bg-indigo-300'
 };
 
 const SIZES = {
-  xs: 'h-5 px-1.5 text-[10px] gap-1',
+  xs: 'h-5 px-1.5 text-[11px] gap-1',
   sm: 'h-6 px-2 text-xs gap-1.5',
   md: 'h-7 px-2.5 text-xs gap-1.5 font-medium'
 };
@@ -175,7 +151,7 @@ export function Badge({
 
   return (
     <span
-      className={['inline-flex items-center font-medium rounded-full border whitespace-nowrap select-none', config.bg, config.text, config.border, sizeClass, className].filter(Boolean).join(' ')}
+      className={['inline-flex items-center font-medium rounded-full border whitespace-nowrap select-none', config.className, sizeClass, className].filter(Boolean).join(' ')}
     >
       {showIcon && Icon && (
         <Icon

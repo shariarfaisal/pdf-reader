@@ -96,3 +96,24 @@ export function formatBytes(bytes) {
   return `${gb.toFixed(2)} GB`;
 }
 
+/**
+ * Clean display title for books imported from PDF filenames without mutating
+ * the underlying database project name or source filename.
+ */
+export function formatBookDisplayTitle(rawName) {
+  if (!rawName || typeof rawName !== 'string') return 'Untitled Book';
+  const original = rawName.trim();
+  if (!original) return 'Untitled Book';
+
+  let cleaned = original
+    .replace(/\.pdf$/i, '')
+    .replace(/[\s_]*[\[(]?boimate\.com[\])]?/gi, '')
+    .replace(/[\s_]*by_goonok\.com/gi, '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s._-]+|[\s._-]+$/g, '')
+    .trim();
+
+  return cleaned || original;
+}
+

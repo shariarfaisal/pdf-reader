@@ -1,613 +1,460 @@
-import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import {
   Play,
   Pause,
   SkipBack,
   SkipForward,
-  RotateCcw,
-  RotateCw,
   Volume2,
   Volume1,
   VolumeX,
-  Gauge,
-  Sparkles,
   Download,
-  ChevronUp
+  Headphones,
+  Eye,
+  FileAudio,
+  Archive
 } from 'lucide-react';
 import { Button } from './ui/Button';
-import { Tag } from './ui/Badge';
-import { readVolume, writeVolume, VOLUME_EVENT } from '../lib/playbackPrefs';
+import { DropdownMenu } from './ui/DropdownMenu';
+import { triggerDownload } from '../lib/download';
+import {
+  GlobalAudioProvider,
+  useAudioPlayer,
+  useAudioPlayerOptional,
+  SPEED_OPTIONS,
+  hasPageAudio,
+  buildAudioUrl,
+  findPlayableInPages,
+  computeBookTimeline,
+  formatAudioTime,
+  SkipSecondsIcon,
+  EqualizerBars,
+  AudioScrubber,
+  readListeningPosition
+} from '../lib/audioPlayerContext';
 
-const SPEED_OPTIONS = [0.75, 0.85, 1.0, 1.25, 1.5, 1.75, 2.0];
+export function AudioPlayerBar(props) {
+  const existingCtx = useAudioPlayerOptional();
+  if (!existingCtx) {
+    return (
+      <GlobalAudioProvider
+        onAutoFollowPage={(_projId, _prevPage, nextPage) => {
+          props.onSelectPage?.(nextPage);
+        }}
+      >
+        <AudioPlayerBarInner {...props} />
+      </GlobalAudioProvider>
+    );
+  }
+  return <AudioPlayerBarInner {...props} />;
+}
 
-/**
- * Continuous audiobook player.
- *
- * Plays the book seamlessly: when a page's audio finishes, it moves straight
- * to the next narrated page without interruption. Features whole-book timeline
- * scrubbing, hover preview tooltip, 10s skipping, fine volume control, and playback speeds.
- */
-export function AudioPlayerBar({
+function AudioPlayerBarInner({
+  project,
   projectId,
   pages = [],
-  currentAudioUrl,
   downloadUrl,
-  pageNumber,
-  totalPages,
-  isReady,
+  fullAudioUrl,
+  audioArchiveUrl,
+  pageNumber = 0, // current viewing page number (0-based)
+  totalPages = 1,
   onSelectPage,
   onPrevPage,
   onNextPage,
   onTimeUpdate
 }) {
-  const audioRef = useRef(null);
-  const preloadRef = useRef(null);
-  const playIntentRef = useRef(false);
-  const pendingSeekRef = useRef(null);
+  const {
+    session,
+    currentAudioUrl: globalAudioUrl,
+    isPlaying: globalIsPlaying,
+    currentTime: globalCurrentTime,
+    duration: globalDuration,
+    playbackRate,
+    volume,
+    isMuted,
+    timeline: globalTimeline,
+    bookPosition: globalBookPosition,
+    seekTotal: globalSeekTotal,
+    syncWorkspaceProject,
+    playProjectPage,
+    resumeProject,
+    togglePlay,
+    skipSeconds,
+    applySeek,
+    stepPlayablePage,
+    changeSpeed,
+    changeVolume,
+    toggleMute
+  } = useAudioPlayer();
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1.0);
-  const [volume, setVolume] = useState(readVolume);
-  const [isMuted, setIsMuted] = useState(false);
-  // Drag-scrub state: while dragging, the bar follows the pointer instead of the audio clock.
-  const [isScrubbing, setIsScrubbing] = useState(false);
-  const [scrubRatio, setScrubRatio] = useState(null);
-  const [isSpeedMenuOpen, setIsSpeedMenuOpen] = useState(false);
-  const [isVolumeSliderOpen, setIsVolumeSliderOpen] = useState(false);
+  const resolvedProject = useMemo(
+    () => project || { id: projectId, name: 'Book', page_count: totalPages },
+    [project, projectId, totalPages]
+  );
 
-  // Hover scrub tooltip
-  const [hoverPosition, setHoverPosition] = useState(null); // { percent: number, time: number } | null
+  // Sync workspace pages & viewing page when idle or viewing the active book
+  useEffect(() => {
+    if (projectId) {
+      syncWorkspaceProject(resolvedProject, pages, pageNumber);
+    }
+  }, [projectId, resolvedProject, pages, pageNumber, syncWorkspaceProject]);
 
-  const ordered = useMemo(
+  const isThisBookSession = session.projectId === projectId;
+  const isPlaying = isThisBookSession ? globalIsPlaying : false;
+
+  const orderedLocalPages = useMemo(
     () => [...pages].sort((a, b) => a.page_number - b.page_number),
     [pages]
   );
 
-  const hasAudio = useCallback(
-    (page) => Boolean(page && page.audio_path && page.status === 'ready'),
-    []
-  );
+  // Saved listening position of this book: used both as the idle display and as
+  // the start point of a cold playback start (resume where the user left off).
+  const savedResumePage = useMemo(() => {
+    const saved = readListeningPosition(projectId);
+    if (!saved) return null;
+    const pageObj = orderedLocalPages.find((p) => p.page_number === saved.page);
+    return hasPageAudio(pageObj) ? { ...saved, pageObj } : null;
+  }, [projectId, orderedLocalPages]);
 
-  const audioUrlFor = useCallback(
-    (page) =>
-      `/api/projects/${projectId}/pages/${page.page_number}/audio?inline=1&v=${page.updated_at || 0}`,
-    [projectId]
-  );
+  // While this book is not the live playback session, the player presents the
+  // saved position instead of the viewed page (so Play resumes, not restarts).
+  const isLiveSession = isThisBookSession && session.isActive;
+  const idleResume = isLiveSession ? null : savedResumePage;
+  const playingPageNumber = isLiveSession
+    ? session.playingPageNumber
+    : idleResume?.page ?? pageNumber;
+  const currentTime = isLiveSession ? globalCurrentTime : idleResume?.time ?? 0;
+  const duration = isLiveSession ? globalDuration : 0;
 
-  /** Next/previous page (in the given direction) that actually has audio. */
-  const findPlayable = useCallback(
-    (fromPageNumber, direction) => {
-      const startIndex = ordered.findIndex((p) => p.page_number === fromPageNumber);
-      if (startIndex === -1) return null;
-      for (let i = startIndex + direction; i >= 0 && i < ordered.length; i += direction) {
-        if (hasAudio(ordered[i])) return ordered[i].page_number;
-      }
-      return null;
-    },
-    [ordered, hasAudio]
-  );
-
-  // Book-wide timeline built from the persisted page durations.
-  const timeline = useMemo(() => {
-    const entries = [];
-    let acc = 0;
-    let complete = ordered.length > 0;
-    for (const page of ordered) {
-      const pageDuration = Number(page.audio_duration) || 0;
-      if (!hasAudio(page) || !(pageDuration > 0)) complete = false;
-      entries.push({ pageNumber: page.page_number, start: acc, duration: pageDuration });
-      acc += pageDuration;
-    }
-    return { entries, total: complete ? acc : 0 };
-  }, [ordered, hasAudio]);
-
-  const pageOffset = useMemo(() => {
-    const entry = timeline.entries.find((e) => e.pageNumber === pageNumber);
-    return entry ? entry.start : 0;
-  }, [timeline, pageNumber]);
-
-  const bookPosition = pageOffset + currentTime;
-
-  // The Settings page edits the default level while the player may be mounted.
+  // Report playback time and playing page number back to ProjectWorkspace for paragraph sync
   useEffect(() => {
-    const sync = (event) => {
-      setVolume(typeof event.detail === 'number' ? event.detail : readVolume());
-      setIsMuted(false);
-    };
-    window.addEventListener(VOLUME_EVENT, sync);
-    return () => window.removeEventListener(VOLUME_EVENT, sync);
-  }, []);
-  // Sync audio element volume
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : volume;
-    }
-  }, [volume, isMuted]);
-
-  // Handle URL change
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!currentAudioUrl) {
-      setIsPlaying(false);
-      setCurrentTime(0);
-      setDuration(0);
-      playIntentRef.current = false;
-      return;
-    }
-    if (!el) return;
-
-    el.load();
-    el.playbackRate = playbackRate;
-    el.volume = isMuted ? 0 : volume;
-
-    if (playIntentRef.current) {
-      el.play()
-        .then(() => setIsPlaying(true))
-        .catch(() => {
-          setIsPlaying(false);
-          playIntentRef.current = false;
-        });
-    }
-  }, [currentAudioUrl]);
-
-  // Pre-buffer next page
-  const nextPreviewUrl = useMemo(() => {
-    const next = findPlayable(pageNumber, 1);
-    if (next === null) return null;
-    const page = ordered.find((p) => p.page_number === next);
-    return page ? audioUrlFor(page) : null;
-  }, [findPlayable, ordered, pageNumber, audioUrlFor]);
-
-  const togglePlay = () => {
-    if (!audioRef.current || !currentAudioUrl) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-      setIsPlaying(false);
-      playIntentRef.current = false;
+    if (isThisBookSession) {
+      onTimeUpdate?.(currentTime, duration, playingPageNumber);
     } else {
-      playIntentRef.current = true;
-      audioRef.current
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch(() => {
-          setIsPlaying(false);
-          playIntentRef.current = false;
-        });
+      onTimeUpdate?.(0, 0, pageNumber);
     }
-  };
+  }, [isThisBookSession, currentTime, duration, playingPageNumber, pageNumber, onTimeUpdate]);
 
-  const handleTimeUpdate = () => {
-    if (!audioRef.current) return;
-    const cur = audioRef.current.currentTime;
-    setCurrentTime(cur);
-    if (onTimeUpdate) onTimeUpdate(cur, duration);
-  };
+  const localTimeline = useMemo(
+    () => computeBookTimeline(orderedLocalPages),
+    [orderedLocalPages]
+  );
 
-  const handleLoadedMetadata = () => {
-    const el = audioRef.current;
-    if (!el) return;
-    const newDuration = el.duration || 0;
-    setDuration(newDuration);
+  const timeline = isThisBookSession ? globalTimeline : localTimeline;
+  const bookPosition = isThisBookSession
+    ? globalBookPosition
+    : localTimeline.entries.find((e) => e.pageNumber === playingPageNumber)?.start || 0;
+  const seekTotal = isThisBookSession
+    ? globalSeekTotal
+    : localTimeline.total > 0
+    ? localTimeline.total
+    : 0;
 
-    if (pendingSeekRef.current !== null) {
-      const target = Math.max(0, Math.min(pendingSeekRef.current, Math.max(0, newDuration - 0.15)));
-      el.currentTime = target;
-      setCurrentTime(target);
-      pendingSeekRef.current = null;
-    }
-  };
+  const viewingPageObj = useMemo(
+    () => orderedLocalPages.find((p) => p.page_number === pageNumber) || null,
+    [orderedLocalPages, pageNumber]
+  );
 
-  /** Page finished → continue straight into the next page that has audio. */
-  const handleEnded = () => {
-    const next = findPlayable(pageNumber, 1);
-    if (next !== null && onSelectPage) {
-      playIntentRef.current = true;
-      setIsPlaying(true);
-      onSelectPage(next);
-      return;
-    }
-    playIntentRef.current = false;
-    setIsPlaying(false);
-  };
+  const playingPageObj = useMemo(
+    () => orderedLocalPages.find((p) => p.page_number === playingPageNumber) || viewingPageObj,
+    [orderedLocalPages, playingPageNumber, viewingPageObj]
+  );
 
-  // Skip relative seconds (+10s / -10s)
-  const skipSeconds = (seconds) => {
-    if (!audioRef.current || !duration) return;
-    const nextTime = Math.max(0, Math.min(duration, currentTime + seconds));
-    audioRef.current.currentTime = nextTime;
-    setCurrentTime(nextTime);
-    if (onTimeUpdate) onTimeUpdate(nextTime, duration);
-  };
+  const effectiveAudioUrl = isThisBookSession
+    ? globalAudioUrl || buildAudioUrl(projectId, playingPageObj)
+    : buildAudioUrl(projectId, playingPageObj);
 
-  // Keyboard controls for audio player (Space, J, L, M)
+  const hasAnyPlayable = useMemo(
+    () => orderedLocalPages.some((p) => hasPageAudio(p)),
+    [orderedLocalPages]
+  );
+
+  const canPlay = Boolean(effectiveAudioUrl || hasAnyPlayable);
+
+  const hasPrev = useMemo(
+    () => findPlayableInPages(orderedLocalPages, playingPageNumber, -1) !== null,
+    [orderedLocalPages, playingPageNumber]
+  );
+
+  const hasNext = useMemo(
+    () => findPlayableInPages(orderedLocalPages, playingPageNumber, 1) !== null,
+    [orderedLocalPages, playingPageNumber]
+  );
+
+  const isDifferentViewingPage = pageNumber !== playingPageNumber;
+  const canPlayViewingPage = isDifferentViewingPage && hasPageAudio(viewingPageObj);
+
+  const controlsRef = useRef(null);
+  const [isSpeedMenuOpen, setIsSpeedMenuOpen] = useState(false);
+  const [isVolumeSliderOpen, setIsVolumeSliderOpen] = useState(false);
+
+  // Close speed/volume popovers on outside click or Escape
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName) || e.target?.isContentEditable) {
-        return;
-      }
-      if (e.code === 'Space') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key.toLowerCase() === 'm') {
-        e.preventDefault();
-        setIsMuted((prev) => !prev);
-      } else if (e.key.toLowerCase() === 'j') {
-        e.preventDefault();
-        skipSeconds(-10);
-      } else if (e.key.toLowerCase() === 'l') {
-        e.preventDefault();
-        skipSeconds(10);
-      }
+    if (!isSpeedMenuOpen && !isVolumeSliderOpen) return;
+    const close = () => {
+      setIsSpeedMenuOpen(false);
+      setIsVolumeSliderOpen(false);
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, currentAudioUrl, currentTime, duration]);
+    const onPointerDown = (e) => {
+      if (!controlsRef.current?.contains(e.target)) close();
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isSpeedMenuOpen, isVolumeSliderOpen]);
 
-  /** Pointer position → 0..1 ratio along the track. */
-  const ratioFromEvent = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (!rect.width) return 0;
-    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  };
+  // Container-width awareness
+  const barRef = useRef(null);
+  const [barWidth, setBarWidth] = useState(0);
 
-  /**
-   * Apply a seek. `commit=false` is the live preview used while dragging: it only
-   * moves the current page's audio, never triggers a page load.
-   */
-  const applySeek = (ratio, commit = true) => {
-    // Whole-book scrub
-    if (timeline.total > 0) {
-      const bookTime = ratio * timeline.total;
-      const entry =
-        timeline.entries.find(
-          (en) => bookTime >= en.start && bookTime < en.start + en.duration
-        ) || timeline.entries[timeline.entries.length - 1];
-      const localTime = Math.max(0, Math.min(bookTime - entry.start, entry.duration - 0.1));
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect?.width ?? 0;
+      setBarWidth((prev) => (Math.abs(prev - next) > 1 ? next : prev));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
-      if (entry.pageNumber !== pageNumber) {
-        if (commit && onSelectPage) {
-          pendingSeekRef.current = localTime;
-          onSelectPage(entry.pageNumber);
-        }
-        return;
-      }
-      if (audioRef.current) {
-        audioRef.current.currentTime = localTime;
-        setCurrentTime(localTime);
-        if (onTimeUpdate) onTimeUpdate(localTime, duration);
-      }
-      return;
-    }
+  const tier = barWidth === 0 || barWidth > 560 ? 'full' : barWidth > 400 ? 'compact' : 'tiny';
 
-    // Page-local scrub
-    if (!audioRef.current || !duration) return;
-    const newTime = ratio * duration;
-    audioRef.current.currentTime = newTime;
-    setCurrentTime(newTime);
-    if (onTimeUpdate) onTimeUpdate(newTime, duration);
-  };
+  const pageTotalDuration = duration > 0 ? duration : playingPageObj?.audio_duration || 0;
+  const pageTimeLabel = `${formatAudioTime(currentTime)} / ${formatAudioTime(pageTotalDuration)}`;
+  const bookTimeLabel =
+    timeline.total > 0
+      ? `${formatAudioTime(bookPosition)} / ${formatAudioTime(timeline.total)}`
+      : null;
 
-  const seekTotal = timeline.total > 0 ? timeline.total : duration;
+  const currentPosition = timeline.total > 0 ? bookPosition : currentTime;
+  const currentTimeLabel = formatAudioTime(currentTime);
 
-  const handleScrubPointerDown = (e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
-    e.currentTarget.focus?.();
-    const ratio = ratioFromEvent(e);
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    setIsScrubbing(true);
-    setScrubRatio(ratio);
-    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
-    applySeek(ratio, false);
-  };
+  const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
 
-  const handleScrubPointerMove = (e) => {
-    const ratio = ratioFromEvent(e);
-    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
-    if (!isScrubbing) return;
-    setScrubRatio(ratio);
-    applySeek(ratio, false);
-  };
-
-  const handleScrubPointerUp = (e) => {
-    if (!isScrubbing) return;
-    const ratio = ratioFromEvent(e);
-    setScrubRatio(ratio);
-    applySeek(ratio, true);
-    setIsScrubbing(false);
-    setScrubRatio(null);
-    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+  const handleTogglePlay = () => {
+    if (!isLiveSession) {
+      // Cold start: resume the persisted track + timestamp when available.
+      if (savedResumePage) resumeProject(resolvedProject, orderedLocalPages);
+      else playProjectPage(resolvedProject, orderedLocalPages, pageNumber);
+    } else {
+      togglePlay(resolvedProject, orderedLocalPages, playingPageNumber);
     }
   };
-
-  const handleScrubPointerLeave = () => {
-    if (!isScrubbing) setHoverPosition(null);
-  };
-
-  const handleScrubKeyDown = (e) => {
-    if (!seekTotal) return;
-    const step = e.shiftKey ? 30 : 5;
-    const current = isScrubbing && scrubRatio !== null ? scrubRatio : progressPercent / 100;
-    let ratio = null;
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') ratio = current - step / seekTotal;
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') ratio = current + step / seekTotal;
-    else if (e.key === 'Home') ratio = 0;
-    else if (e.key === 'End') ratio = 1;
-    if (ratio === null) return;
-    e.preventDefault();
-    ratio = Math.max(0, Math.min(1, ratio));
-    setScrubRatio(ratio);
-    setHoverPosition({ percent: ratio * 100, time: ratio * seekTotal });
-    applySeek(ratio, true);
-  };
-
-  const changeSpeed = (rate) => {
-    setPlaybackRate(rate);
-    setIsSpeedMenuOpen(false);
-    if (audioRef.current) audioRef.current.playbackRate = rate;
-  };
-
-  const changeVolume = (newVol) => {
-    setVolume(writeVolume(newVol));
-    setIsMuted(false);
-    if (audioRef.current) audioRef.current.volume = newVol;
-  };
-
-  const formatTime = (sec) => {
-    if (!sec || isNaN(sec)) return '0:00';
-    const total = Math.floor(sec);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
-  };
-
-  const progressPercent = useMemo(() => {
-    if (isScrubbing && scrubRatio !== null) return scrubRatio * 100;
-    if (timeline.total > 0) return (bookPosition / timeline.total) * 100;
-    if (duration > 0) return (currentTime / duration) * 100;
-    return 0;
-  }, [isScrubbing, scrubRatio, timeline.total, bookPosition, duration, currentTime]);
-
-  const hasPrev = findPlayable(pageNumber, -1) !== null;
-  const hasNext = findPlayable(pageNumber, 1) !== null;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 bg-obsidian-950/95 backdrop-blur-md border-t border-obsidian-700/80 px-6 py-2.5 shadow-2xl">
-      <audio
-        ref={audioRef}
-        src={currentAudioUrl || undefined}
-        preload="auto"
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleEnded}
+    <div
+      role="region"
+      aria-label="Audiobook Player"
+      ref={barRef}
+      className="relative flex-shrink-0 h-16 z-40 bg-obsidian-850 border-t border-obsidian-700/80 px-3 sm:px-4 shadow-lg"
+    >
+      {/* Scrub bar on top edge */}
+      <AudioScrubber
+        seekTotal={seekTotal}
+        currentPosition={currentPosition}
+        onApplySeek={(ratio, commit) => applySeek(ratio, commit, resolvedProject, orderedLocalPages)}
+        label={timeline.total > 0 ? 'Book playback position' : 'Page playback position'}
+        title={timeline.total > 0 ? 'Seek across book narration' : 'Seek within page audio'}
+        className="absolute inset-x-0 -top-1.5 h-3"
       />
-      {/* Hidden preloader for the upcoming page */}
-      {nextPreviewUrl && (
-        <audio ref={preloadRef} src={nextPreviewUrl} preload="auto" className="hidden" />
-      )}
 
-      <div className="max-w-7xl mx-auto flex flex-col gap-2">
-        {/* Scrub Bar with Hover Time Tooltip */}
-        <div
-          onPointerDown={handleScrubPointerDown}
-          onPointerMove={handleScrubPointerMove}
-          onPointerUp={handleScrubPointerUp}
-          onPointerCancel={handleScrubPointerUp}
-          onPointerLeave={handleScrubPointerLeave}
-          onKeyDown={handleScrubKeyDown}
-          role="slider"
-          tabIndex={0}
-          aria-label={timeline.total > 0 ? 'Book playback position' : 'Page playback position'}
-          aria-valuemin={0}
-          aria-valuemax={Math.round(seekTotal)}
-          aria-valuenow={Math.round(isScrubbing && scrubRatio !== null ? scrubRatio * seekTotal : Math.min(bookPosition, seekTotal))}
-          aria-valuetext={`${formatTime(isScrubbing && scrubRatio !== null ? scrubRatio * seekTotal : bookPosition)} of ${formatTime(seekTotal)}`}
-          className="group relative w-full h-3 -my-1 flex items-center cursor-pointer touch-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-obsidian-950"
-          title={
-            timeline.total > 0 ? 'Seek across the whole book' : 'Seek within this page'
-          }
-        >
-          {/* Track stays visible at rest; it only thickens on hover (parent height is fixed, so no layout shift). */}
-          <div className="w-full h-1.5 group-hover:h-2 bg-obsidian-600/70 rounded-full overflow-hidden transition-all duration-150">
-            <div
-              className="h-full bg-gradient-to-r from-brand-400 via-sky-400 to-indigo-400 rounded-full transition-all duration-75"
-              style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }}
-            />
+      <div className="h-full flex items-center gap-3">
+        {/* Left: playing page + page time + total book duration + Follow / Play viewed page */}
+        <div className="flex-1 min-w-0 flex items-center gap-2 sm:gap-2.5 overflow-hidden">
+          {tier === 'full' && (
+            isPlaying ? (
+              <EqualizerBars isPlaying={true} className="text-indigo-500 dark:text-indigo-400 flex-shrink-0" />
+            ) : (
+              <Headphones className="w-4 h-4 flex-shrink-0 text-indigo-500 dark:text-indigo-400" />
+            )
+          )}
+          <div className="min-w-0 leading-tight">
+            <div className="text-xs font-semibold text-slate-100 whitespace-nowrap truncate">
+              Page {playingPageNumber + 1}
+              {tier === 'full' && (
+                <span className="font-normal text-slate-400"> of {totalPages}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
+              <span>{tier === 'full' ? pageTimeLabel : currentTimeLabel}</span>
+              {tier === 'full' && bookTimeLabel && (
+                <span className="hidden lg:inline text-slate-500">
+                  · Book {bookTimeLabel}
+                </span>
+              )}
+            </div>
           </div>
 
-          {/* Draggable playhead — always visible so the bar reads as interactive. */}
-          <div
-            className={`absolute top-1/2 w-3 h-3 rounded-full bg-white shadow-md ring-2 ring-brand-500/50 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-150 ${
-              isScrubbing ? 'scale-125' : 'scale-100 group-hover:scale-110'
-            }`}
-            style={{ left: `${Math.max(0, Math.min(100, progressPercent))}%` }}
-          />
+          {isDifferentViewingPage && tier !== 'tiny' && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => onSelectPage?.(playingPageNumber)}
+                title={`Viewing page ${pageNumber + 1} — jump back to playing page ${playingPageNumber + 1}`}
+                aria-label="Follow the playing page"
+                className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-indigo-500/10 border border-indigo-500/25 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/20 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Eye className="w-3 h-3" />
+                {tier === 'full' ? `Follow p. ${playingPageNumber + 1}` : null}
+              </button>
 
-          {/* Hover Time Tooltip */}
-          {hoverPosition && (
-            <div
-              className="absolute -top-7 transform -translate-x-1/2 pointer-events-none bg-obsidian-800 border border-obsidian-700 text-slate-200 text-[10px] font-mono px-1.5 py-0.5 rounded shadow-lg z-50 whitespace-nowrap"
-              style={{ left: `${hoverPosition.percent}%` }}
-            >
-              {formatTime(hoverPosition.time)}
+              {canPlayViewingPage && tier === 'full' && (
+                <button
+                  type="button"
+                  onClick={() => playProjectPage(resolvedProject, orderedLocalPages, pageNumber)}
+                  title={`Switch playback to currently viewed page ${pageNumber + 1}`}
+                  aria-label={`Play page ${pageNumber + 1}`}
+                  className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-obsidian-750 border border-obsidian-700 text-[11px] font-medium text-slate-200 hover:border-indigo-500/50 hover:text-indigo-300 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Play className="w-2.5 h-2.5 fill-current" />
+                  <span>Play p. {pageNumber + 1}</span>
+                </button>
+              )}
             </div>
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-4">
-          {/* Left: Page & Timeline Information */}
-          <div className="flex items-center gap-3 min-w-[240px]">
-            <Tag tone="slate" size="sm" className="font-mono">
-              Page {pageNumber + 1} of {totalPages}
-            </Tag>
+        {/* Center: transport */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={!hasPrev}
+            onClick={() => {
+              const prev = stepPlayablePage(-1, resolvedProject, orderedLocalPages, playingPageNumber);
+              if (prev === null) onPrevPage?.();
+            }}
+            title="Previous narrated page"
+            aria-label="Previous narrated page"
+          >
+            <SkipBack className="w-4 h-4" />
+          </Button>
 
-            {!isReady ? (
-              <span className="text-xs text-amber-400 flex items-center gap-1.5 animate-pulse">
-                <Sparkles className="w-3.5 h-3.5" />
-                Narrating in pipeline…
-              </span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={!effectiveAudioUrl}
+            onClick={() => skipSeconds(-10)}
+            title="Back 10 seconds (J)"
+            aria-label="Skip back 10 seconds"
+          >
+            <SkipSecondsIcon direction="back" />
+          </Button>
+
+          <Button
+            variant="primary"
+            size="icon-lg"
+            disabled={!canPlay}
+            onClick={handleTogglePlay}
+            className="!rounded-full mx-1"
+            title={isPlaying ? 'Pause (Space)' : 'Play narration (Space)'}
+            aria-label={isPlaying ? 'Pause narration' : 'Play narration'}
+          >
+            {isPlaying ? (
+              <Pause className="w-4 h-4 fill-current" />
             ) : (
-              <span
-                className="text-xs text-slate-400 font-mono tabular-nums"
-                title="Book timeline position / total duration"
+              <Play className="w-4 h-4 fill-current translate-x-px" />
+            )}
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={!effectiveAudioUrl}
+            onClick={() => skipSeconds(10)}
+            title="Forward 10 seconds (L)"
+            aria-label="Skip forward 10 seconds"
+          >
+            <SkipSecondsIcon direction="forward" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={!hasNext}
+            onClick={() => {
+              const next = stepPlayablePage(1, resolvedProject, orderedLocalPages, playingPageNumber);
+              if (next === null) onNextPage?.();
+            }}
+            title="Next narrated page"
+            aria-label="Next narrated page"
+          >
+            <SkipForward className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {/* Right: speed, volume, download */}
+        <div
+          ref={controlsRef}
+          className="flex-1 min-w-0 flex items-center justify-end gap-1"
+        >
+          <div className={`relative ${tier === 'tiny' ? 'hidden' : ''}`}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsSpeedMenuOpen((prev) => !prev)}
+              className="font-mono tabular-nums min-w-[2.75rem]"
+              title="Playback speed"
+              aria-label={`Playback speed ${playbackRate}x`}
+              aria-expanded={isSpeedMenuOpen}
+            >
+              {playbackRate}x
+            </Button>
+            {isSpeedMenuOpen && (
+              <div
+                className="absolute bottom-full mb-2 right-0 bg-obsidian-850 border border-obsidian-700/80 rounded-xl shadow-lg py-1 w-28 z-50 animate-fade-in"
+                role="menu"
               >
-                {timeline.total > 0
-                  ? `${formatTime(bookPosition)} / ${formatTime(timeline.total)}`
-                  : `${formatTime(currentTime)} / ${formatTime(duration)}`}
-              </span>
+                {SPEED_OPTIONS.map((rate) => (
+                  <button
+                    key={rate}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      changeSpeed(rate);
+                      setIsSpeedMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 text-xs font-mono flex items-center justify-between transition cursor-pointer ${
+                      playbackRate === rate
+                        ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-semibold'
+                        : 'text-slate-200 hover:bg-obsidian-750'
+                    }`}
+                  >
+                    <span>{rate}x</span>
+                    {rate === 1.0 && <span className="text-[10px] text-slate-400">normal</span>}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Center: Playback Controls (Prev, -10s, Play/Pause, +10s, Next) */}
-          <div className="flex items-center gap-1.5">
-            {/* Previous Page with Audio */}
+          <div
+            className={`relative flex items-center ${tier === 'tiny' ? 'hidden' : ''}`}
+            onMouseEnter={() => setIsVolumeSliderOpen(true)}
+            onMouseLeave={() => setIsVolumeSliderOpen(false)}
+          >
             <Button
               variant="ghost"
               size="icon-sm"
-              disabled={!hasPrev}
-              onClick={() => {
-                const prev = findPlayable(pageNumber, -1);
-                if (prev !== null) onSelectPage(prev);
-                else onPrevPage?.();
-              }}
-              title="Previous narrated page"
-              aria-label="Previous narrated page"
+              onClick={toggleMute}
+              title={isMuted ? 'Unmute (M)' : `Mute (M) — ${Math.round(volume * 100)}%`}
+              aria-label={isMuted ? 'Unmute' : 'Mute'}
+              aria-pressed={isMuted}
             >
-              <SkipBack className="w-4 h-4 text-slate-300" />
+              <VolumeIcon className={`w-4 h-4 ${isMuted || volume === 0 ? 'text-rose-500' : ''}`} />
             </Button>
-
-            {/* Skip Backward 10s */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!currentAudioUrl}
-              onClick={() => skipSeconds(-10)}
-              title="Skip back 10 seconds (J)"
-              aria-label="Skip back 10 seconds"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-slate-300" />
-            </Button>
-
-            {/* Main Play / Pause Button */}
-            <Button
-              variant="primary"
-              size="icon"
-              disabled={!currentAudioUrl}
-              onClick={togglePlay}
-              className="w-10 h-10 rounded-full shadow-lg shadow-brand-500/25"
-              title={isPlaying ? 'Pause (Space)' : 'Play narration (Space)'}
-              aria-label={isPlaying ? 'Pause narration' : 'Play narration'}
-            >
-              {isPlaying ? (
-                <Pause className="w-5 h-5 fill-current" />
-              ) : (
-                <Play className="w-5 h-5 fill-current translate-x-0.5" />
-              )}
-            </Button>
-
-            {/* Skip Forward 10s */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!currentAudioUrl}
-              onClick={() => skipSeconds(10)}
-              title="Skip forward 10 seconds (L)"
-              aria-label="Skip forward 10 seconds"
-            >
-              <RotateCw className="w-3.5 h-3.5 text-slate-300" />
-            </Button>
-
-            {/* Next Page with Audio */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!hasNext}
-              onClick={() => {
-                const next = findPlayable(pageNumber, 1);
-                if (next !== null) onSelectPage(next);
-                else onNextPage?.();
-              }}
-              title="Next narrated page"
-              aria-label="Next narrated page"
-            >
-              <SkipForward className="w-4 h-4 text-slate-300" />
-            </Button>
-          </div>
-
-          {/* Right Tools: Speed Menu, Volume Popover, Download */}
-          <div className="flex items-center gap-2.5 min-w-[240px] justify-end">
-            {/* Playback Speed Selector */}
-            <div className="relative">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsSpeedMenuOpen((prev) => !prev)}
-                className="font-mono text-xs px-2.5 h-8 gap-1"
-                title="Playback Speed"
-                aria-expanded={isSpeedMenuOpen}
-              >
-                <Gauge className="w-3.5 h-3.5 text-brand-400" />
-                <span>{playbackRate}x</span>
-              </Button>
-
-              {isSpeedMenuOpen && (
-                <div
-                  className="absolute bottom-full mb-2 right-0 bg-obsidian-850 border border-obsidian-700 rounded-xl shadow-2xl py-1 w-28 z-50 animate-fade-in"
-                  role="menu"
-                >
-                  {SPEED_OPTIONS.map((rate) => (
-                    <button
-                      key={rate}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => changeSpeed(rate)}
-                      className={`w-full text-left px-3 py-1.5 text-xs font-mono flex items-center justify-between transition ${
-                        playbackRate === rate
-                          ? 'bg-brand-500/10 text-brand-300 font-semibold'
-                          : 'text-slate-300 hover:bg-obsidian-800 hover:text-white'
-                      }`}
-                    >
-                      <span>{rate}x</span>
-                      {rate === 1.0 && <span className="text-[10px] text-slate-500">Normal</span>}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Volume Control with hover/popup slider */}
-            <div
-              className="relative flex items-center"
-              onMouseEnter={() => setIsVolumeSliderOpen(true)}
-              onMouseLeave={() => setIsVolumeSliderOpen(false)}
-            >
-              <button
-                type="button"
-                onClick={() => setIsMuted((prev) => !prev)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-obsidian-800 transition"
-                title={isMuted ? 'Unmute (M)' : `Mute (M) — currently ${Math.round(volume * 100)}%`}
-                aria-label={isMuted ? 'Unmute' : 'Mute'}
-              >
-                {isMuted || volume === 0 ? (
-                  <VolumeX className="w-4 h-4 text-rose-400" />
-                ) : volume < 0.5 ? (
-                  <Volume1 className="w-4 h-4 text-slate-300" />
-                ) : (
-                  <Volume2 className="w-4 h-4 text-slate-300" />
-                )}
-              </button>
-
-              {/* Volume Slider Dropdown / Flyout */}
-              {isVolumeSliderOpen && (
-                <div className="absolute bottom-full mb-2 -left-8 bg-obsidian-850/95 backdrop-blur-md border border-obsidian-700 rounded-xl shadow-2xl p-2.5 w-32 flex flex-col gap-1.5 z-50 animate-fade-in">
+            {isVolumeSliderOpen && (
+              <div className="absolute bottom-full right-0 pb-2 z-50 animate-fade-in">
+                <div className="bg-obsidian-850 border border-obsidian-700/80 rounded-xl shadow-lg p-2.5 w-32 flex flex-col gap-1.5">
                   <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                     <span>Vol</span>
-                    <span className="text-slate-200">
+                    <span className="text-slate-100">
                       {isMuted ? 'Muted' : `${Math.round(volume * 100)}%`}
                     </span>
                   </div>
@@ -618,32 +465,53 @@ export function AudioPlayerBar({
                     step="0.05"
                     value={isMuted ? 0 : volume}
                     onChange={(e) => changeVolume(parseFloat(e.target.value))}
-                    className="w-full accent-brand-400 h-1.5 bg-obsidian-700 rounded-lg appearance-none cursor-pointer"
+                    className="w-full accent-indigo-500 h-1.5 bg-obsidian-700 rounded-lg appearance-none cursor-pointer"
                     aria-label="Volume slider"
                   />
                 </div>
-              )}
-            </div>
-
-            {/* Download narration audio */}
-            <a
-              href={downloadUrl || undefined}
-              download
-              aria-disabled={!currentAudioUrl}
-              onClick={(e) => {
-                if (!currentAudioUrl) e.preventDefault();
-              }}
-              className={`inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border text-xs font-medium transition ${
-                currentAudioUrl
-                  ? 'border-obsidian-700 bg-obsidian-800 text-slate-300 hover:text-white hover:border-slate-600'
-                  : 'border-obsidian-800 text-slate-600 pointer-events-none'
-              }`}
-              title={currentAudioUrl ? 'Download this page narration MP3' : 'Audio not ready to download'}
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">MP3</span>
-            </a>
+              </div>
+            )}
           </div>
+
+          <DropdownMenu
+            icon={Download}
+            variant="ghost"
+            size="icon-sm"
+            align="right"
+            side="top"
+            showChevron={false}
+            title="Download audio"
+            items={[
+              {
+                label: 'Full audiobook (.mp3)',
+                description: 'All pages merged into one continuous audio file',
+                icon: FileAudio,
+                disabled: !pages.some((p) => p.audio_path),
+                onSelect: () => {
+                  triggerDownload(fullAudioUrl || `/api/projects/${projectId}/audio-full`);
+                }
+              },
+              {
+                label: `Page ${pageNumber + 1} audio (.wav)`,
+                description: 'Single audio file for current viewing page',
+                icon: Volume2,
+                disabled: !downloadUrl,
+                onSelect: () => {
+                  triggerDownload(downloadUrl);
+                }
+              },
+              { divider: true },
+              {
+                label: 'All pages archive (.tar.gz)',
+                description: 'Archive of individual WAV files per page',
+                icon: Archive,
+                disabled: !pages.some((p) => p.audio_path),
+                onSelect: () => {
+                  triggerDownload(audioArchiveUrl || `/api/projects/${projectId}/audio-archive`);
+                }
+              }
+            ]}
+          />
         </div>
       </div>
     </div>

@@ -10,12 +10,14 @@ import {
   RefreshCw,
   Download,
   Search,
-  Hash
+  Hash,
+  Layers
 } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
-import { MetricCard } from './ui/MetricCard';
 import { Tag } from './ui/Badge';
+import { MetricCard } from './ui/MetricCard';
+import { ThemeToggle } from './ui/ThemeToggle';
 import {
   formatUsd,
   formatTokens,
@@ -334,7 +336,7 @@ function CostCell({ row }) {
   const { value, isList } = displayCost(row);
   return (
     <span
-      className={`font-mono ${isList ? 'text-amber-300/90' : 'text-emerald-400'}`}
+      className={`font-mono ${isList ? 'text-amber-700 dark:text-amber-300/90' : 'text-emerald-700 dark:text-emerald-400'}`}
       title={
         isList
           ? 'Not billed (local proxy / free endpoint) — shown at API list price'
@@ -342,12 +344,12 @@ function CostCell({ row }) {
       }
     >
       {formatUsd(value, { precise: true })}
-      {isList ? <span className="ml-1 text-[9px] uppercase tracking-wide text-amber-500/70">list</span> : null}
+      {isList ? <span className="ml-1 text-[9px] uppercase tracking-wide text-amber-700 dark:text-amber-400">list</span> : null}
     </span>
   );
 }
 
-export function ApiUsageDashboard({ projects = [], onBack }) {
+export function ApiUsageDashboard({ projects = [], onBack, embedded = false }) {
   const [preset, setPreset] = useState('7d');
   const [customFrom, setCustomFrom] = useState(toDateInput(new Date()));
   const [customTo, setCustomTo] = useState(toDateInput(new Date()));
@@ -417,40 +419,235 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
   const byStage = summary?.byStage || [];
   const byProject = summary?.byProject || [];
   const errorRate = totals.calls > 0 ? Math.round((totals.errorCalls / totals.calls) * 100) : 0;
+  // Provider prefix/implicit cache reads, as a share of all input tokens.
+  const cacheHitRate =
+    totals.inputTokens > 0 ? Math.round(((totals.cachedTokens || 0) / totals.inputTokens) * 100) : 0;
   const totalPages = Math.max(1, Math.ceil((logPage.total || 0) / PAGE_SIZE));
 
   const exportHref = `/api/usage/export.csv?${buildQuery(range, filters)}`;
 
-  return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-6 mb-6 border-b border-obsidian-700/80 gap-4">
-        <div className="flex items-center gap-3">
-          {onBack && (
-            <Button variant="ghost" size="icon" onClick={onBack} title="Back to library">
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
-          )}
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-              <Activity className="w-6 h-6 text-brand-400" />
-              API Usage & Cost
-            </h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Every OCR and narration LLM call with tokens, spend, latency, and failures
-            </p>
-          </div>
+  const content = (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight text-slate-100">
+            API Usage & Accounting
+          </h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Every OCR and narration call tracked with token counts, latency, and cost basis.
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => load()} isLoading={isLoading}>
+          <Button variant="secondary" size="xs" icon={RefreshCw} onClick={() => load()} isLoading={isLoading}>
             Refresh
           </Button>
           <a href={exportHref} download>
-            <Button variant="secondary" size="sm" icon={Download}>
+            <Button variant="secondary" size="xs" icon={Download}>
               Export CSV
             </Button>
           </a>
         </div>
       </div>
+
+      <FilterBar
+        preset={preset}
+        setPreset={(p) => {
+          setPreset(p);
+          setPage(0);
+        }}
+        customFrom={customFrom}
+        setCustomFrom={setCustomFrom}
+        customTo={customTo}
+        setCustomTo={setCustomTo}
+        filters={filters}
+        setFilter={setFilter}
+        search={search}
+        setSearch={setSearch}
+        projects={projects}
+        models={byModel.map((m) => m.model)}
+      />
+
+      {error && (
+        <div className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 mt-4">
+        <MetricCard label="Total spend" value={formatUsd(totals.costUsd, { precise: true })} hint="Billed only (local proxy = $0)" icon={Coins} accent="emerald" />
+        <MetricCard label="List-price value" value={formatUsd(totals.listCostUsd, { precise: true })} hint="What these tokens cost at API rates" icon={Coins} accent="amber" />
+        <MetricCard label="API calls" value={formatTokens(totals.calls)} hint={`${totals.okCalls || 0} ok · ${totals.errorCalls || 0} failed`} icon={Hash} accent="brand" />
+        <MetricCard label="Input tokens" value={formatTokens(totals.inputTokens)} hint={`Total ${formatTokens(totals.totalTokens)} tokens`} icon={ArrowDownToLine} accent="violet" />
+        <MetricCard label="Cache reads" value={formatTokens(totals.cachedTokens)} hint={cacheHitRate > 0 ? `${cacheHitRate}% of input tokens were cache hits` : 'No provider cache hits yet'} icon={Layers} accent="brand" />
+        <MetricCard label="Output tokens" value={formatTokens(totals.outputTokens)} hint={totals.estimatedCalls > 0 ? `${totals.estimatedCalls} estimated` : 'Reported by provider'} icon={ArrowUpFromLine} accent="violet" />
+        <MetricCard label="Avg latency" value={formatDuration(totals.avgLatencyMs)} hint={`Max ${formatDuration(totals.maxLatencyMs)}`} icon={Timer} accent="slate" />
+        <MetricCard label="Error rate" value={`${errorRate}%`} hint={`${totals.errorCalls || 0} failed calls`} icon={AlertTriangle} accent={errorRate > 0 ? 'rose' : 'slate'} />
+        <MetricCard label="Range" value={preset === 'all' ? 'All time' : `${range.from || '—'} → ${range.to || '—'}`} hint="Filters apply to all metrics" icon={Activity} accent="slate" />
+      </div>
+
+      <DailySpendChart days={byDay} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <BreakdownTable
+          title="By model"
+          rows={byModel}
+          emptyLabel="No calls yet."
+          columns={[
+            { key: 'model', label: 'Model', strong: true },
+            { key: 'calls', label: 'Calls', align: 'right' },
+            { key: 'inputTokens', label: 'In', align: 'right', render: (r) => formatTokens(r.inputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
+            { key: 'outputTokens', label: 'Out', align: 'right', render: (r) => formatTokens(r.outputTokens) },
+            { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
+          ]}
+        />
+        <BreakdownTable
+          title="By stage"
+          rows={byStage}
+          emptyLabel="No calls yet."
+          columns={[
+            { key: 'stage', label: 'Stage', strong: true, render: (r) => stageLabel(r.stage) },
+            { key: 'calls', label: 'Calls', align: 'right' },
+            { key: 'tokens', label: 'Tokens', align: 'right', render: (r) => formatTokens(r.inputTokens + r.outputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
+            { key: 'avgLatencyMs', label: 'Avg', align: 'right', render: (r) => formatDuration(r.avgLatencyMs) },
+            { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
+          ]}
+        />
+        <BreakdownTable
+          title="By project"
+          rows={byProject}
+          emptyLabel="No calls yet."
+          columns={[
+            { key: 'projectName', label: 'Project', strong: true },
+            { key: 'calls', label: 'Calls', align: 'right' },
+            { key: 'inputTokens', label: 'In', align: 'right', render: (r) => formatTokens(r.inputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
+            { key: 'outputTokens', label: 'Out', align: 'right', render: (r) => formatTokens(r.outputTokens) },
+            { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
+          ]}
+        />
+        <PricingReference models={byModel} />
+      </div>
+
+      {/* Log table */}
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+            <span>Call History</span>
+            <span className="text-xs text-slate-400 font-mono">({logPage.total} calls)</span>
+          </h3>
+          <div className="flex items-center gap-1.5 text-xs text-slate-400 font-mono">
+            <span>Page {page + 1} of {totalPages}</span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              ←
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={page + 1 >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              →
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="border-b border-obsidian-750 text-[11px] text-slate-400">
+                <th className="py-2 px-3 font-medium">Time</th>
+                <th className="py-2 px-3 font-medium">Project</th>
+                <th className="py-2 px-2 font-medium text-right">Page</th>
+                <th className="py-2 px-3 font-medium">Stage</th>
+                <th className="py-2 px-3 font-medium">Model</th>
+                <th className="py-2 px-3 font-medium text-right">Tokens In</th>
+                <th className="py-2 px-3 font-medium text-right">Cached</th>
+                <th className="py-2 px-3 font-medium text-right">Tokens Out</th>
+                <th className="py-2 px-3 font-medium text-right">Cost</th>
+                <th className="py-2 px-3 font-medium text-right">Latency</th>
+                <th className="py-2 px-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-obsidian-750/60 font-mono text-[11.5px]">
+              {logPage.rows.map((row) => (
+                <tr key={row.id} className="hover:bg-obsidian-750/30">
+                  <td className="py-2 px-3 text-slate-400 whitespace-nowrap">{formatDateTime(row.ts)}</td>
+                  <td className="py-2 px-3 font-sans text-slate-200 truncate max-w-[140px]">{row.project_name || '—'}</td>
+                  <td className="py-2 px-2 text-right text-slate-400">{row.page_number !== null ? row.page_number + 1 : '—'}</td>
+                  <td className="py-2 px-3 font-sans text-slate-300">{stageLabel(row.stage)}</td>
+                  <td className="py-2 px-3 text-slate-300 truncate max-w-[140px]">{row.model}</td>
+                  <td className="py-2 px-3 text-right text-slate-400">{formatTokens(row.input_tokens)}</td>
+                  <td className="py-2 px-3 text-right text-emerald-400/70">{row.cached_tokens ? formatTokens(row.cached_tokens) : '—'}</td>
+                  <td className="py-2 px-3 text-right text-slate-400">{formatTokens(row.output_tokens)}</td>
+                  <td className="py-2 px-3 text-right text-slate-200"><CostCell row={row} /></td>
+                  <td className="py-2 px-3 text-right text-slate-400">{formatDuration(row.latency_ms)}</td>
+                  <td className="py-2 px-3"><StatusPill status={row.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col bg-app text-slate-100">
+      <header className="sticky top-0 z-30 border-b border-obsidian-700/80 bg-obsidian-850/95 backdrop-blur-md">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 md:px-8 h-14 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            {onBack && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={ArrowLeft}
+                onClick={onBack}
+                className="text-slate-300"
+              >
+                Library
+              </Button>
+            )}
+            <span className="text-slate-500 font-normal">/</span>
+            <span className="text-sm font-semibold text-slate-100 truncate">
+              Usage
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => load()} isLoading={isLoading}>
+              Refresh
+            </Button>
+            <a href={exportHref} download>
+              <Button variant="secondary" size="sm" icon={Download}>
+                Export CSV
+              </Button>
+            </a>
+            <div className="h-4 w-px bg-obsidian-700/60 mx-1" aria-hidden="true" />
+            <ThemeToggle />
+          </div>
+        </div>
+      </header>
+
+      <main className="flex-1 w-full max-w-[1280px] mx-auto px-4 sm:px-6 md:px-8 py-8 space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-100">
+            API Usage & Accounting
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Every OCR and narration call tracked with token counts, latency, and cost basis.
+          </p>
+        </div>
 
       <FilterBar
         preset={preset}
@@ -482,6 +679,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
         <MetricCard label="List-price value" value={formatUsd(totals.listCostUsd, { precise: true })} hint="What these tokens cost at API rates" icon={Coins} accent="amber" />
         <MetricCard label="API calls" value={formatTokens(totals.calls)} hint={`${totals.okCalls || 0} ok · ${totals.errorCalls || 0} failed`} icon={Hash} accent="brand" />
         <MetricCard label="Input tokens" value={formatTokens(totals.inputTokens)} hint={`Total ${formatTokens(totals.totalTokens)} tokens`} icon={ArrowDownToLine} accent="violet" />
+        <MetricCard label="Cache reads" value={formatTokens(totals.cachedTokens)} hint={cacheHitRate > 0 ? `${cacheHitRate}% of input tokens were cache hits` : 'No provider cache hits yet'} icon={Layers} accent="brand" />
         <MetricCard label="Output tokens" value={formatTokens(totals.outputTokens)} hint={totals.estimatedCalls > 0 ? `${totals.estimatedCalls} estimated` : 'Reported by provider'} icon={ArrowUpFromLine} accent="violet" />
         <MetricCard label="Avg latency" value={formatDuration(totals.avgLatencyMs)} hint={`Max ${formatDuration(totals.maxLatencyMs)}`} icon={Timer} accent="slate" />
         <MetricCard label="Error rate" value={`${errorRate}%`} hint={`${totals.errorCalls || 0} failed calls`} icon={AlertTriangle} accent={errorRate > 0 ? 'rose' : 'slate'} />
@@ -501,6 +699,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
             { key: 'model', label: 'Model', strong: true },
             { key: 'calls', label: 'Calls', align: 'right' },
             { key: 'inputTokens', label: 'In', align: 'right', render: (r) => formatTokens(r.inputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
             { key: 'outputTokens', label: 'Out', align: 'right', render: (r) => formatTokens(r.outputTokens) },
             { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
           ]}
@@ -513,6 +712,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
             { key: 'stage', label: 'Stage', strong: true, render: (r) => stageLabel(r.stage) },
             { key: 'calls', label: 'Calls', align: 'right' },
             { key: 'tokens', label: 'Tokens', align: 'right', render: (r) => formatTokens(r.inputTokens + r.outputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
             { key: 'avgLatencyMs', label: 'Avg', align: 'right', render: (r) => formatDuration(r.avgLatencyMs) },
             { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
           ]}
@@ -525,6 +725,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
             { key: 'projectName', label: 'Project', strong: true },
             { key: 'calls', label: 'Calls', align: 'right' },
             { key: 'inputTokens', label: 'In', align: 'right', render: (r) => formatTokens(r.inputTokens) },
+            { key: 'cachedTokens', label: 'Cached', align: 'right', render: (r) => formatTokens(r.cachedTokens) },
             { key: 'outputTokens', label: 'Out', align: 'right', render: (r) => formatTokens(r.outputTokens) },
             { key: 'costUsd', label: 'Cost', align: 'right', render: (r) => <CostCell row={r} /> }
           ]}
@@ -558,6 +759,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
                 <th className="px-3 py-2 text-left font-medium">Stage</th>
                 <th className="px-3 py-2 text-left font-medium">Model</th>
                 <th className="px-3 py-2 text-right font-medium">In</th>
+                <th className="px-3 py-2 text-right font-medium">Cached</th>
                 <th className="px-3 py-2 text-right font-medium">Out</th>
                 <th className="px-3 py-2 text-right font-medium">Cost</th>
                 <th className="px-3 py-2 text-right font-medium">Latency</th>
@@ -567,7 +769,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
             <tbody className="divide-y divide-obsidian-800">
               {logPage.rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-10 text-center text-slate-500">
+                  <td colSpan={11} className="px-4 py-10 text-center text-slate-500">
                     No API calls logged for this filter yet.
                   </td>
                 </tr>
@@ -589,6 +791,9 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
                     {formatTokens(row.input_tokens)}
                     {row.estimated ? <span className="text-amber-500/80 ml-1" title="Estimated (provider returned no usage)">*</span> : null}
                   </td>
+                  <td className="px-3 py-2 text-right text-emerald-400/70 font-mono">
+                    {row.cached_tokens ? formatTokens(row.cached_tokens) : '—'}
+                  </td>
                   <td className="px-3 py-2 text-right text-slate-300 font-mono">{formatTokens(row.output_tokens)}</td>
                   <td className="px-3 py-2 text-right">
                     <CostCell row={row} />
@@ -608,6 +813,7 @@ export function ApiUsageDashboard({ projects = [], onBack }) {
           </table>
         </div>
       </Card>
+      </main>
     </div>
   );
 }

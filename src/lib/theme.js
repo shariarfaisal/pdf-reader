@@ -3,56 +3,93 @@ import { useState, useEffect, useCallback } from 'react';
 const STORAGE_KEY = 'pdf-reader-theme';
 const THEME_CHANGE_EVENT = 'pdf-reader-theme-changed';
 
-export function getStoredTheme() {
+export function getSystemTheme() {
+  if (typeof window === 'undefined') return 'light';
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
+}
+
+export function getStoredPreference() {
   if (typeof window === 'undefined') return 'light';
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === 'light' || saved === 'dark') return saved;
+    if (saved === 'light' || saved === 'dark' || saved === 'system') return saved;
   } catch {}
-  return 'light'; // Default to light per user request, while supporting dark seamlessly
+  return 'light'; // Default to light per brief
 }
 
-export function applyTheme(theme) {
+export function resolveTheme(pref) {
+  if (pref === 'system') return getSystemTheme();
+  return pref === 'dark' ? 'dark' : 'light';
+}
+
+export function applyTheme(resolvedTheme) {
   if (typeof document === 'undefined') return;
+  const safe = resolvedTheme === 'dark' ? 'dark' : 'light';
   const root = document.documentElement;
   root.classList.remove('light', 'dark');
-  root.classList.add(theme);
-  root.setAttribute('data-theme', theme);
-  root.style.colorScheme = theme;
+  root.classList.add(safe);
+  root.setAttribute('data-theme', safe);
+  root.style.colorScheme = safe;
 }
 
-export function setThemePreference(theme) {
-  const nextTheme = theme === 'dark' ? 'dark' : 'light';
+export function setThemePreference(pref) {
+  const nextPref = pref === 'dark' || pref === 'system' ? pref : 'light';
   try {
-    localStorage.setItem(STORAGE_KEY, nextTheme);
+    localStorage.setItem(STORAGE_KEY, nextPref);
   } catch {}
-  applyTheme(nextTheme);
-  window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: nextTheme }));
-  return nextTheme;
+  const resolved = resolveTheme(nextPref);
+  applyTheme(resolved);
+  window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: { preference: nextPref, resolved } }));
+  return nextPref;
 }
 
 export function useTheme() {
-  const [theme, setLocalTheme] = useState(() => getStoredTheme());
+  const [preference, setPreferenceState] = useState(() => getStoredPreference());
+  const [theme, setResolvedTheme] = useState(() => resolveTheme(getStoredPreference()));
 
   useEffect(() => {
     applyTheme(theme);
 
     const onThemeChange = (e) => {
-      if (e?.detail) {
-        setLocalTheme(e.detail);
+      const rawPref = typeof e?.detail === 'string' ? e.detail : e?.detail?.preference;
+      const rawRes = typeof e?.detail === 'string' ? resolveTheme(e.detail) : e?.detail?.resolved;
+      if (rawPref || rawRes) {
+        const nextPref = rawPref || rawRes;
+        const nextRes = rawRes || resolveTheme(nextPref);
+        setPreferenceState(nextPref);
+        setResolvedTheme(nextRes);
+        applyTheme(nextRes);
       }
     };
 
+    const onMediaChange = (e) => {
+      const currentPref = getStoredPreference();
+      if (currentPref === 'system') {
+        const nextResolved = e.matches ? 'dark' : 'light';
+        setResolvedTheme(nextResolved);
+        applyTheme(nextResolved);
+      }
+    };
+
+    const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    mql?.addEventListener('change', onMediaChange);
+
     const onStorage = (e) => {
-      if (e.key === STORAGE_KEY && (e.newValue === 'light' || e.newValue === 'dark')) {
-        setLocalTheme(e.newValue);
-        applyTheme(e.newValue);
+      if (e.key === STORAGE_KEY) {
+        const nextPref = e.newValue === 'dark' || e.newValue === 'system' ? e.newValue : 'light';
+        setPreferenceState(nextPref);
+        const nextRes = resolveTheme(nextPref);
+        setResolvedTheme(nextRes);
+        applyTheme(nextRes);
       }
     };
 
     window.addEventListener(THEME_CHANGE_EVENT, onThemeChange);
     window.addEventListener('storage', onStorage);
     return () => {
+      mql?.removeEventListener('change', onMediaChange);
       window.removeEventListener(THEME_CHANGE_EVENT, onThemeChange);
       window.removeEventListener('storage', onStorage);
     };
@@ -61,13 +98,15 @@ export function useTheme() {
   const toggleTheme = useCallback(() => {
     const next = theme === 'dark' ? 'light' : 'dark';
     setThemePreference(next);
-    setLocalTheme(next);
+    setPreferenceState(next);
+    setResolvedTheme(next);
   }, [theme]);
 
   const setTheme = useCallback((next) => {
     setThemePreference(next);
-    setLocalTheme(next);
+    setPreferenceState(next);
+    setResolvedTheme(resolveTheme(next));
   }, []);
 
-  return { theme, setTheme, toggleTheme, isDark: theme === 'dark' };
+  return { theme, preference, setTheme, toggleTheme, isDark: theme === 'dark' };
 }
